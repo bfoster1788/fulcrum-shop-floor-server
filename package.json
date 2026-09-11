@@ -1,0 +1,19 @@
+{
+  "name": "fulcrum-shop-floor-server",
+  "version": "0.1.0",
+  "description": "Backend proxy server for the Fulcrum Shop Floor PWA (Impulse Precision Manufacturing). Holds the single Fulcrum Public API bearer token server-side, exposes a small REST API matching the PWA's api.js seam, and maintains local side-tables Fulcrum's API has no place for (operator badge mapping, run->equipment attribution, idempotency keys, local pause reasons).",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5"
+  }
+}
