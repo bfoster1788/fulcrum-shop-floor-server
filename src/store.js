@@ -37,6 +37,26 @@ const EMPTY_STATE = {
     { badgeId: '041A7617C92A81', badgeIdPending: false, fulcrumUserId: '6a55441207121116ef248b25', firstName: 'Lucas', lastName: 'Gonzalez', role: 'Quality Manager' },
     { badgeId: '04C7CE17C92A81', badgeIdPending: false, fulcrumUserId: '65e66a75f02972e2dac674f2', firstName: 'Tyler', lastName: 'Puska', role: 'Administrator' },
     { badgeId: '04489217C92A81', badgeIdPending: false, fulcrumUserId: '6aa0566a4c0d9cf0ab528849', firstName: 'Griffin', lastName: 'Foster', role: 'Production Operator' },
+
+    // Remaining active Fulcrum users pulled via search-users on 2026-09-14, per Brian's request to
+    // get everyone into the roster even before their fob is in hand. badgeId is a placeholder
+    // (never matches a real NFC scan) and badgeIdPending stays true until an admin calls
+    // POST /api/operators with that person's real badge id -- upsertOperator matches on
+    // fulcrumUserId, so registering a real badge later just overwrites the placeholder in place.
+    // They already show up in the name-search sign-in list today (GET /api/operators returns
+    // everyone regardless of badgeIdPending); only the quick-tap badge flow is unavailable until
+    // then. Two accounts were deliberately left out as not individual people: "Quality Dept"
+    // (690e228b867f5de5d665c046, a shared department login) and "Shop Floor iPad"
+    // (67ad28af4c3c9488fd2a302f, a shared device login) -- flag to Brian if either should be
+    // added as a real badge-scannable identity after all.
+    { badgeId: 'PENDING-68b8629d3043618cb24da941', badgeIdPending: true, fulcrumUserId: '68b8629d3043618cb24da941', firstName: 'Chris', lastName: 'Bowers', role: 'Production Operator' },
+    { badgeId: 'PENDING-67f3fb8a6d2bc3746df9e284', badgeIdPending: true, fulcrumUserId: '67f3fb8a6d2bc3746df9e284', firstName: 'Emily', lastName: 'Eaton', role: 'Quality Manager' },
+    { badgeId: 'PENDING-65e241a25c7b303e5d8807f8', badgeIdPending: true, fulcrumUserId: '65e241a25c7b303e5d8807f8', firstName: 'Nate', lastName: 'Eckert', role: 'Administrator' },
+    { badgeId: 'PENDING-65e66cfcf02972e2dac67501', badgeIdPending: true, fulcrumUserId: '65e66cfcf02972e2dac67501', firstName: 'Renee', lastName: 'Eckert', role: 'Administrator' },
+    { badgeId: 'PENDING-690e2335ae0cc0c81c9c4f61', badgeIdPending: true, fulcrumUserId: '690e2335ae0cc0c81c9c4f61', firstName: 'Ivan', lastName: 'Gurgurov', role: 'Quality Lab' },
+    { badgeId: 'PENDING-65e66cbcf02972e2dac674fe', badgeIdPending: true, fulcrumUserId: '65e66cbcf02972e2dac674fe', firstName: 'Seth', lastName: 'McCallum', role: 'Production Operator' },
+    { badgeId: 'PENDING-695eebbe73459f1f7567ad9c', badgeIdPending: true, fulcrumUserId: '695eebbe73459f1f7567ad9c', firstName: 'Mark', lastName: 'Stockhover', role: 'Quality Supervisor' },
+    { badgeId: 'PENDING-6aa055b78d71a9fab9dcdbc5', badgeIdPending: true, fulcrumUserId: '6aa055b78d71a9fab9dcdbc5', firstName: 'Austin', lastName: 'Workes', role: 'Production Operator' },
   ],
   equipmentAssignments: {}, // timerId -> equipmentId
   pauseReasons: {},         // timerId -> { reason, note, pausedAtUtc }
