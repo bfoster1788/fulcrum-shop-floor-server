@@ -1,9 +1,13 @@
 // Shop Floor service worker.
-// Strategy: app shell is precached (cache-first) so the app opens with no signal.
+// Strategy: the app shell (HTML + JS) is NETWORK-FIRST with a cache fallback, and static
+// assets are cache-first. Cache-first on the shell meant a phone kept serving the build
+// it opened with and showed a fixed bug as still broken for a launch or two — on a shop
+// floor that reads as "the app is wrong", so correctness of code beats a faster cold
+// start. Offline still works: the fallback is the last good copy.
 // API calls are network-only and never cached — stale job data on a shop floor is worse
 // than no data. Writes that fail offline are queued in IndexedDB by the app, not here.
 
-const VERSION = 'shopfloor-v2';
+const VERSION = 'shopfloor-v3';
 const SHELL = [
   './',
   './index.html',
@@ -51,25 +55,34 @@ self.addEventListener('fetch', (e) => {
   }
   if (url.origin !== self.location.origin) return;
 
-  e.respondWith(
-    caches.match(e.request).then((hit) => {
-      if (hit) {
-        // Refresh the shell in the background so the next launch is current.
-        fetch(e.request).then((res) => {
-          if (res && res.ok) caches.open(VERSION).then((c) => c.put(e.request, res.clone()));
-        }).catch(() => {});
-        return hit;
-      }
-      return fetch(e.request)
+  // Code: always ask the network first, fall back to the last good copy.
+  const isCode = e.request.mode === 'navigate'
+    || /\.(html|js|webmanifest)$/.test(url.pathname)
+    || url.pathname.endsWith('/');
+
+  if (isCode) {
+    e.respondWith(
+      fetch(e.request)
         .then((res) => {
-          if (res && res.ok && e.request.destination !== '') {
+          if (res && res.ok) {
             const copy = res.clone();
             caches.open(VERSION).then((c) => c.put(e.request, copy));
           }
           return res;
         })
-        .catch(() => caches.match('./index.html'));
-    })
+        .catch(() => caches.match(e.request).then((hit) => hit || caches.match('./index.html')))
+    );
+    return;
+  }
+
+  e.respondWith(
+    caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
+      if (res && res.ok) {
+        const copy = res.clone();
+        caches.open(VERSION).then((c) => c.put(e.request, copy));
+      }
+      return res;
+    }).catch(() => caches.match('./index.html')))
   );
 });
 

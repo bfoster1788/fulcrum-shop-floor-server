@@ -217,7 +217,7 @@ function render() {
       ${kpi('UNATTENDED', String(unattended.length), unattended.length ? BLUE : null)}
       ${kpi('DOWN', String(down.length), down.length ? RED : null)}
       ${kpi('OPERATORS ON JOBS', String(onShift), null)}
-      ${kpi('AS OF', new Date(F.asOfUtc).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), null)}
+      ${kpi('AS OF', new Date(F.asOf).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), null)}
     </div>
   </div>
 

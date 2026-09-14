@@ -114,7 +114,7 @@ function legalType(type, equipId, cnc) {
 let S = {
   screen: 'runs', signedIn: false, user: null,
   jobs: [], timers: [], jobId: null, timerId: null, routingLoading: false,
-  query: 'castelion', sheet: null, pickEquip: null, entryType: 'run',
+  query: '', sheet: null, pickEquip: null, entryType: 'run',
   // Fulcrum has no paused state and no reason field, so a paused run only exists here.
   // Keyed by userId first, then timeEntryId — several operators share a phone, and a
   // record must never re-attach to whoever signs in next. This device's storage is the
@@ -240,6 +240,10 @@ async function refresh() {
 }
 
 const jobOf = (id) => S.jobs.filter((j) => j.jobId === id)[0];
+
+// Letters and digits only. Search has to survive how a person actually types their own
+// name on a shop-floor phone: "b.foster", "B Foster", "bfoster".
+const squash = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 // What the operator reads off the traveler. jobId is Fulcrum's 24-char ObjectId and
 // stays the API key only — it is never a label.
@@ -601,13 +605,15 @@ function filterJobRows() {
   let shown = 0;
   rows.forEach((row) => {
     const hit = !q || (row.dataset.search || '').indexOf(q) > -1;
-    row.hidden = !hit;
+    // NOT the hidden attribute: these rows carry an inline display, which beats the UA
+    // stylesheet's [hidden] rule, so the row would stay on screen while the count said 0.
+    row.style.display = hit ? 'flex' : 'none';
     if (hit) shown++;
   });
   const count = app.querySelector('#job-count');
   if (count) count.textContent = shown + (shown === 1 ? ' MATCH' : ' MATCHES');
   const empty = app.querySelector('#job-empty');
-  if (empty) empty.hidden = shown > 0;
+  if (empty) empty.style.display = shown > 0 ? 'none' : 'flex';
   const text = app.querySelector('#job-empty-text');
   if (text && !S.loadError) {
     text.textContent = q
@@ -625,16 +631,21 @@ app.addEventListener('input', (e) => {
   }
   if (e.target.id !== 'op-search') return;
   const q = e.target.value.trim().toLowerCase();
+  // "b.foster", "B. Foster" and "bfoster" are the same person typing. Both sides get
+  // stripped to letters and digits so punctuation and spacing never decide a match.
+  const qs = squash(q);
   const rows = app.querySelectorAll('.op-row');
   let shown = 0;
   rows.forEach((row) => {
-    const hit = !q || (row.dataset.search || '').indexOf(q) > -1;
-    row.hidden = !hit;
+    const hit = !q
+      || (row.dataset.search || '').indexOf(q) > -1
+      || (qs && (row.dataset.squash || '').indexOf(qs) > -1);
+    row.style.display = hit ? 'flex' : 'none';
     if (hit) shown++;
   });
   const empty = app.querySelector('#op-empty');
   if (empty) {
-    empty.hidden = shown > 0;
+    empty.style.display = shown > 0 ? 'none' : 'block';
     empty.textContent = rows.length ? 'No operator matches that name.' : 'No operators loaded.';
   }
 });
@@ -813,7 +824,8 @@ function lockView() {
       <div id="op-list" style="display:flex;flex-direction:column;gap:9px">
         ${hits.length ? hits.map((o) => `
           <button data-act="signInAs" data-arg="${esc(o.userId)}" class="card op-row"
-            data-search="${esc((o.name + ' ' + o.role).toLowerCase())}"
+            data-search="${esc([o.name, o.firstName, o.lastName, o.role].filter(Boolean).join(' ').toLowerCase())}"
+            data-squash="${esc(squash([o.firstName, o.lastName, o.name, o.role].filter(Boolean).join(' ')))}"
             style="display:flex;align-items:center;gap:11px;min-height:64px;padding:0 14px;text-align:left">
             <span style="width:30px;height:30px;border-radius:8px;background:rgba(245,165,36,.16);color:${AMBER};display:grid;place-items:center;font:700 11px/1 'JetBrains Mono',monospace;flex:none">${esc(o.name.replace(/[^A-Z]/g, '').slice(0, 2))}</span>
             <span style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:0">
@@ -888,11 +900,9 @@ function runsView() {
 }
 
 function searchView() {
-  const q = S.query.trim().toLowerCase();
-  const hits = !q ? S.jobs : S.jobs.filter((j) =>
-    [j.jobId, j.jobName, j.itemNumber, j.customerName]
-      .concat((j.operations || []).map((o) => o.operationName))
-      .filter(Boolean).some((v) => String(v).toLowerCase().indexOf(q) > -1));
+  // Every job is rendered; the count and the empty block are set by filterJobRows after
+  // this returns, so there is one source of truth for what is on screen.
+  const hits = S.jobs;
   return `
   <div class="scroll">
     <div style="display:flex;flex-direction:column;gap:9px;padding:14px 14px 10px">
@@ -914,7 +924,7 @@ function searchView() {
     </div>
     <div id="job-count" class="label" style="padding:14px 14px 6px">${hits.length} MATCH${hits.length === 1 ? '' : 'ES'}</div>
     <div style="display:flex;flex-direction:column;gap:9px;padding:0 14px 18px">
-      <div id="job-empty" ${hits.length ? 'hidden' : ''} style="padding:22px 16px;border:1px dashed ${S.loadError ? 'rgba(226,73,59,.5)' : 'rgba(255,255,255,.16)'};border-radius:11px;display:flex;flex-direction:column;gap:11px;text-align:center">
+      <div id="job-empty" style="padding:22px 16px;border:1px dashed ${S.loadError ? 'rgba(226,73,59,.5)' : 'rgba(255,255,255,.16)'};border-radius:11px;display:flex;flex-direction:column;gap:11px;text-align:center">
           <span id="job-empty-text" class="mono" style="font-size:12px;line-height:1.5;color:rgba(242,240,236,.6)">${S.loadError
             ? 'Job list failed to load \u2014 ' + esc(S.loadError) + '. This is not an empty shop; nothing could be read.'
             : (S.query.trim() ? 'No open job matches &ldquo;' + esc(S.query.trim()) + '&rdquo;.' : 'No open jobs loaded.')}</span>
@@ -924,7 +934,7 @@ function searchView() {
         const op = curOp(j) || {};
         const mine = runOn(j.jobId, op.operationId);
         return `
-        <button data-act="openJob" data-arg="${esc(j.jobId)}" class="card job-row" ${hits.indexOf(j) > -1 ? '' : 'hidden'}
+        <button data-act="openJob" data-arg="${esc(j.jobId)}" class="card job-row"
           data-search="${esc([jobNo(j), j.jobId, j.jobName, j.itemNumber, j.customerName].concat((j.operations || []).map((o) => o.operationName)).filter(Boolean).join(' ').toLowerCase())}"
           style="display:flex;flex-direction:column;gap:8px;padding:13px 14px;text-align:left">
           <div class="row">
@@ -936,7 +946,7 @@ function searchView() {
           <div class="mono" style="font-size:10px;line-height:1.5;color:rgba(242,240,236,.6)">${esc(j.customerName || '')}${j.itemNumber ? ' \u00b7 ' + esc(j.itemNumber) : ''}</div>
           <div class="row" style="gap:7px">
             <span class="dot" style="background:${op.operationName ? AMBER : 'rgba(242,240,236,.35)'}"></span>
-            <span class="mono" style="font-size:10.5px;color:${op.operationName ? AMBER : 'rgba(242,240,236,.5)'}">${esc(op.operationName || 'routing not loaded')}</span>
+            <span class="mono" style="font-size:10.5px;color:${op.operationName ? AMBER : 'rgba(242,240,236,.5)'}">${esc(op.operationName || 'open to load the routing')}</span>
             <span class="mono" style="margin-left:auto;font-size:10px;color:rgba(242,240,236,.6)">${esc(op.workCenterName || '')}</span>
           </div>
         </button>`;
