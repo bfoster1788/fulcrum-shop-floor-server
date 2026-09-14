@@ -92,6 +92,14 @@ const PAUSE_GROUPS = [
 ];
 const STORE = 'shopfloor.state.v1';
 
+// Who may open the floor board. Roles come from Fulcrum's user record, so this list is
+// the whole of the rule — a role added there needs adding here. A gate on the client is
+// a VISIBILITY gate: it keeps the board off the wrong phones, it is not security. The
+// board's data comes from our server, so anyone who wants the numbers badly enough can
+// still request them — put the check on the server if that matters.
+const BOARD_ROLES = ['administrator', 'production supervisor', 'quality manager', 'quality supervisor'];
+const canSeeBoard = (u) => !!u && BOARD_ROLES.indexOf(String(u.role || '').trim().toLowerCase()) > -1;
+
 const app = document.getElementById('app');
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 const fmt = (sec) => {
@@ -239,6 +247,10 @@ async function refresh() {
   });
 }
 
+// Bump on every deploy. Shown in the header and on the sign-in screen so a phone
+// serving a stale shell is identifiable without a console.
+const BUILD = '2026.09.14-7';
+
 const jobOf = (id) => S.jobs.filter((j) => j.jobId === id)[0];
 
 // Letters and digits only. Search has to survive how a person actually types their own
@@ -308,14 +320,31 @@ async function write(label, fn, replay) {
 const actions = {
   nav: (screen) => set({ screen, sheet: null }),
 
+  // The identity block in the header goes to whatever this person's landing view is —
+  // the same rule as launch, so "home" means one thing: the board for supervisors,
+  // a scan for everyone on the floor.
+  home: () => {
+    if (canSeeBoard(S.user)) { location.assign('./board.html'); return; }
+    set({ screen: 'search', sheet: null });
+    actions.openScan();
+  },
+
   signInAs: async (userId) => {
     const op = (S.operators.filter((o) => o.userId === userId)[0]) || null;
     if (!op) return;
-    set({ signedIn: true, user: op, scanning: false, timers: [], jobs: [] });
+    // Same landing rule as a cold launch, applied at the moment the role becomes known:
+    // board-authorized people go to the board, everyone else lands in a scan.
+    if (canSeeBoard(op)) {
+      set({ signedIn: true, user: op, scanning: false, timers: [], jobs: [] });
+      location.assign('./board.html');
+      return;
+    }
+    set({ signedIn: true, user: op, scanning: false, timers: [], jobs: [], screen: 'search' });
     await refresh();
     // No clock-in route exists yet, so this app has NOT punched a Fulcrum time clock.
     // Saying otherwise would assert a record that does not exist.
     flash('Signed in as ' + op.name);
+    actions.openScan();
   },
 
   scanBadge: async () => {
@@ -792,7 +821,7 @@ function lockView() {
   return `
   <div class="scroll" style="display:flex;flex-direction:column;gap:16px;padding:26px 16px 20px">
     <div style="display:flex;flex-direction:column;gap:9px">
-      <span class="label">IMPULSE PRECISION · SHOP FLOOR</span>
+      <span class="label">IMPULSE PRECISION · SHOP FLOOR · ${esc(BUILD)}</span>
       <h1>${badgeMode ? 'Tap your badge' : 'Who are you?'}</h1>
       <p class="mono" style="margin:0;font-size:12px;line-height:1.6;color:rgba(242,240,236,.6)">
         ${badgeMode
@@ -1240,11 +1269,24 @@ function header() {
   const initials = S.user.name.replace(/[^A-Z]/g, '').slice(0, 2) || 'MO';
   return `
   <div style="flex:none;display:flex;align-items:center;gap:10px;padding:11px 14px;background:#1b1a18;border-bottom:1px solid rgba(255,255,255,.07)">
-    <div style="width:32px;height:32px;border-radius:8px;background:${AMBER};color:#131211;display:grid;place-items:center;font:700 12px/1 'JetBrains Mono',monospace;flex:none">${initials}</div>
-    <div style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">
-      <div style="font:600 12.5px/1.1 Helvetica,sans-serif">${esc(S.user.name)}</div>
-      <div class="mono" style="font-size:9.5px;color:rgba(242,240,236,.68);letter-spacing:.04em">${esc(String(S.user.role).toUpperCase())}${S.user.shift ? ' · ' + esc(String(S.user.shift).toUpperCase()) + ' SHIFT' : ''}</div>
-    </div>
+    <button data-act="home" aria-label="Go to my home view" style="flex:none;margin-right:auto;display:flex;align-items:center;gap:10px;min-height:48px;max-width:70%;padding:0;text-align:left;background:none;border:0">
+      <div style="width:32px;height:32px;border-radius:8px;background:${AMBER};color:#131211;display:grid;place-items:center;font:700 12px/1 'JetBrains Mono',monospace;flex:none">${initials}</div>
+      <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+        <div class="row" style="gap:5px">
+          <span style="font:600 12.5px/1.1 Helvetica,sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(S.user.name)}</span>
+          <span class="mono" style="font-size:11px;color:rgba(242,240,236,.5)">&rsaquo;</span>
+        </div>
+        <div class="mono" style="font-size:9.5px;color:rgba(242,240,236,.68);letter-spacing:.04em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(String(S.user.role).toUpperCase())}${S.user.shift ? ' · ' + esc(String(S.user.shift).toUpperCase()) + ' SHIFT' : ''} · ${esc(BUILD)}</div>
+      </div>
+    </button>
+    ${canSeeBoard(S.user) ? `
+    <a href="./board.html" aria-label="Floor board" style="flex:none;display:flex;align-items:center;gap:7px;padding:0 12px;min-height:56px;border-radius:12px;
+      background:rgba(143,180,255,.1);border:1px solid rgba(143,180,255,.32);text-decoration:none">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${BLUE}" stroke-width="2" stroke-linecap="round">
+        <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>
+      </svg>
+      <span class="mono" style="font-size:9.5px;font-weight:600;letter-spacing:.06em;color:${BLUE}">BOARD</span>
+    </a>` : ''}
     <button data-act="signOut" style="display:flex;align-items:center;gap:7px;padding:0 13px;min-height:56px;border-radius:12px;
       background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16)">
       <span class="mono" style="font-size:9.5px;font-weight:600;letter-spacing:.06em;color:rgba(242,240,236,.72)">SIGN OUT</span>
@@ -1352,14 +1394,38 @@ const params = new URLSearchParams(location.search);
 if (params.get('action') === 'scan') S.screen = 'search';
 if (!S.nfc) S.signInMode = 'name';
 
+// Landing rule: board-authorized people start on the floor board, everyone else starts
+// in a scan. Role is only known after sign-in, so this cannot live in the manifest's
+// single start_url — it is decided here, once per launch.
+//
+// "?stay" is what keeps this from being a trap: the board's own link back, the Runs and
+// My-runs shortcuts, and any in-app navigation set it, so a supervisor who deliberately
+// opens the operator app is not bounced to the board. sessionStorage remembers that
+// choice for the rest of the session, so a reload does not undo it either.
+const STAY = 'shopfloor.stay';
+const asked = params.get('action');
+if (params.has('stay') || asked) { try { sessionStorage.setItem(STAY, '1'); } catch (e) {} }
+const staying = (() => { try { return sessionStorage.getItem(STAY) === '1'; } catch (e) { return false; } })();
+
+function landing() {
+  if (staying || !S.signedIn) return;
+  if (canSeeBoard(S.user)) { location.replace('./board.html'); return true; }
+  // Everyone else lands ready to scan a traveler.
+  S.screen = 'search';
+  setTimeout(() => actions.openScan(), 0);
+}
+const leaving = landing();
+
 render();
 // The manifest shortcut opens straight into a scan.
 if (params.get('action') === 'scan' && S.signedIn) setTimeout(() => actions.openScan(), 0);
 // The operator table backs name search, so it is needed before anyone can sign in.
-api.operators()
-  .then((r) => set({ operators: r.items }))
-  .catch((e) => set({ loadError: e && e.status ? 'Server error ' + e.status : 'No connection' }));
-if (S.signedIn) refresh();
+if (!leaving) {
+  api.operators()
+    .then((r) => set({ operators: r.items }))
+    .catch((e) => set({ loadError: e && e.status ? 'Server error ' + e.status : 'No connection' }));
+  if (S.signedIn) refresh();
+}
 if (isMock) console.info('Shop Floor running on mock data. Set MOCK = false in api.js when the server is live.');
 </script>
 </body>

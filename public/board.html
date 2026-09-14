@@ -62,6 +62,37 @@ const hhmm = (sec) => {
 
 let F = null;
 
+// The board reads the SAME session the operator app writes, so who you are signed in as
+// on this device decides whether the board opens. Same role list as index.html — keep
+// the two in step. This is a visibility gate, not security: the numbers still come from
+// our server, so a real restriction belongs there.
+const STORE = 'shopfloor.state.v1';
+const BOARD_ROLES = ['administrator', 'production supervisor', 'quality manager', 'quality supervisor'];
+
+function sessionUser() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
+    return (saved && saved.user) || null;
+  } catch (e) { return null; }
+}
+
+const mayView = (u) => !!u && BOARD_ROLES.indexOf(String(u.role || '').trim().toLowerCase()) > -1;
+
+function gateView(u) {
+  const signedIn = !!u;
+  return `
+  <div class="wrap" style="display:flex;flex-direction:column;gap:14px;max-width:560px;padding-top:12vh">
+    <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.09em;color:${AMBER}">IMPULSE PRECISION \u00b7 FLOOR BOARD</span>
+    <h1>${signedIn ? 'Not your view' : 'Sign in first'}</h1>
+    <p class="mono" style="margin:0;font-size:12px;line-height:1.65;color:rgba(242,240,236,.7)">
+      ${signedIn
+        ? esc(u.name) + ' is signed in as ' + esc(String(u.role)) + '. The floor board is for supervisors, quality managers and administrators. Your runs, times and pauses are all in the operator app.'
+        : 'The floor board follows the operator app\u2019s sign-in. Sign in on this device, then come back.'}
+    </p>
+    <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
+  </div>`;
+}
+
 const INK = { running: GREEN, down: RED, idle: DIM };
 const LABEL = { running: 'RUNNING', down: 'DOWN', idle: 'IDLE' };
 
@@ -74,6 +105,16 @@ const utilPct = (m) => (m.utilizationPctShift != null ? m.utilizationPctShift : 
 const spindlePct = (m) => (m.spindleUtilizationPctShift != null ? m.spindleUtilizationPctShift : 0);
 const show = (n) => (n >= 100 ? Math.round(n) : Math.round(n * 10) / 10);
 const inkFor = (n) => (n >= 70 ? GREEN : n >= 40 ? AMBER : RED);
+
+// The dashboard payload carries no server timestamp, so this is when THIS page last
+// read it — labelled "read at" rather than "as of" so a board left up on a wall is not
+// read as a claim about the server. A missing or unparseable value shows a dash: an
+// "Invalid Date" in 22px type is worse than no number.
+function asOfLabel(v) {
+  const d = v ? new Date(v) : null;
+  if (!d || isNaN(d.getTime())) return '\u2014';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
 
 function machineCard(m) {
   const ink = INK[m.state];
@@ -174,13 +215,17 @@ function alerts() {
   // signal, and "which spindles are free" reads better as a list than as a stack.
   const idle = F.machines.filter((m) => m.state === 'idle');
   if (idle.length) {
-    const lo = idle.filter((m) => m.lightsOut).map((m) => m.equipmentId);
+    const lo = idle.filter((m) => m.lightsOut);
     out.push({
       kind: 'warn',
       tag: idle.length + ' IDLE · ' + idle.map((m) => m.equipmentId).join(', '),
-      text: lo.length
-        ? lo.join(', ') + ' can run lights-out and ' + (lo.length === 1 ? 'is' : 'are') + ' sitting empty.'
-        : 'No job loaded on ' + (idle.length === 1 ? 'this machine' : 'these machines') + '.',
+      // The roster is already in the tag. Repeating it here as the lights-out subset
+      // read as two lists disagreeing, so say the count instead of naming them twice.
+      text: lo.length === idle.length
+        ? 'All of them can run lights-out.'
+        : lo.length
+          ? lo.length + ' of the ' + idle.length + ' can run lights-out.'
+          : 'None of them can run lights-out.',
     });
   }
 
@@ -188,6 +233,10 @@ function alerts() {
 }
 
 function render() {
+  // Re-read the session on every paint: the board is often left up on a wall, and a
+  // sign-out in the operator app has to close it without a reload.
+  const u = sessionUser();
+  if (!mayView(u)) { el.innerHTML = gateView(u); return; }
   if (!F) {
     el.innerHTML = `<div class="wrap mono" style="color:rgba(242,240,236,.68)">Loading floor…</div>`;
     return;
@@ -217,7 +266,7 @@ function render() {
       ${kpi('UNATTENDED', String(unattended.length), unattended.length ? BLUE : null)}
       ${kpi('DOWN', String(down.length), down.length ? RED : null)}
       ${kpi('OPERATORS ON JOBS', String(onShift), null)}
-      ${kpi('AS OF', new Date(F.asOf).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), null)}
+      ${kpi('READ AT', asOfLabel(F.asOfUtc), null)}
     </div>
   </div>
 
@@ -277,7 +326,11 @@ function render() {
 
       <div style="display:flex;flex-direction:column;gap:11px">
         <h2>Staffing</h2>
-        ${F.operators.map(staffRow).join('')}
+        ${F.operators.length
+          ? F.operators.map(staffRow).join('')
+          : `<div class="mono" style="padding:13px 12px;border-radius:9px;border:1px dashed rgba(255,255,255,.14);font-size:10.5px;line-height:1.5;color:rgba(242,240,236,.66)">
+              Nobody is clocked onto a job right now. This list fills from open runs, so it stays empty between shifts \u2014 it is not a roster.
+            </div>`}
       </div>
 
       <div id="decide" style="padding:12px 13px;border-radius:9px;border:1px solid rgba(255,255,255,.1);display:flex;flex-direction:column;gap:6px">
@@ -287,19 +340,21 @@ function render() {
         attended. Values above 100% mean work outside the scheduled weekday, not an error.</span>
       </div>
 
-      <a class="mono" href="./index.html" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
+      <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
     </div>
   </div>`;
 }
 
 async function load() {
+  if (!mayView(sessionUser())) { render(); return; }
   try { F = await api.floorStatus(); } catch (e) { F = F || null; }
   render();
 }
 
 load();
 setInterval(load, 15000);                       // fresh enough for a glance, cheap enough to leave up
-setInterval(() => { if (F) render(); }, 1000);   // keep the elapsed clocks moving
+setInterval(render, 1000);                      // keeps the elapsed clocks moving — and closes the
+                                                // board within a second of a sign-out elsewhere
 </script>
 </body>
 </html>
