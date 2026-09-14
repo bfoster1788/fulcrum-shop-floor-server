@@ -311,11 +311,33 @@ export const api = {
 
   // Paused runs live in this phone's own storage now that pause is a Fulcrum break —
   // there is no server route, so a reinstalled phone cannot recover them.
+  // ---- Reports (today) ------------------------------------------------------------
+  // Neither of these exists on the server yet — the dashboard only ever looks at timers
+  // that are running RIGHT NOW, so nothing can answer "what happened today". Both calls
+  // resolve to a null payload rather than throwing, and the report views say plainly
+  // that the read is missing. REPORTS-API.md is the spec for implementing them.
+  // Schedule: operations across the open job set, grouped by where they run. Fulcrum puts
+  // scheduledEquipmentName / scheduledStartUtc on the OPERATION, so a queue per machine or
+  // per bench is a real read rather than an invention — but it needs the routing for every
+  // open job, which is one request per job. The client join below is honest but heavy; a
+  // server-side /api/schedule/queues would replace it with one call (see REPORTS-API.md).
+  routingFor: (jobId) => api.routing(jobId).then((r) => r.operations, () => []),
+
+  laborReport: (date) => get('/reports/labor', { date }, '/reports/labor').then((r) => r, () => null),
+
+  // Material backlog and on-time history: neither Fulcrum's purchase-order/receipt endpoints nor
+  // any shipment read is wired into this server yet (fulcrumClient.js has jobs, items, sales
+  // orders, customers, equipment, timers and routing — nothing for POs, material allocation or
+  // shipments). Both resolve null so the view can say precisely what is missing.
+  materialsBacklog: () => get('/materials/backlog', null, '/materials/backlog').then((r) => r, () => null),
+  onTimeReport: () => get('/reports/on-time', null, '/reports/on-time').then((r) => r, () => null),
+  equipmentReport: (date) => get('/reports/equipment', { date }, '/reports/equipment').then((r) => r, () => null),
+
   pausedRuns: () => Promise.resolve({ items: [] }),
 
-  addQuantity: ({ jobId, itemToMakeId, operationId, quantity }) =>
+  addQuantity: ({ jobId, itemToMakeId, operationId, quantity, scrapQuantity }) =>
     post(`/jobs/${jobId}/items-to-make/${itemToMakeId}/operations/${operationId}/add-quantity-completed`,
-      { quantity }),
+      { quantity, scrapQuantity }),
 
   completeOperation: ({ jobId, itemToMakeId, operationId, quantity, scrapQuantity }) =>
     post(`/jobs/${jobId}/items-to-make/${itemToMakeId}/operations/${operationId}/complete`,

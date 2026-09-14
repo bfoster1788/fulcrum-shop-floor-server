@@ -54,8 +54,9 @@
   .chip[aria-pressed="true"] { background:rgba(245,165,36,.15); border-color:#f5a524; color:#f5a524; }
   nav { flex:none; display:flex; gap:1px; background:rgba(255,255,255,.08);
         border-top:1px solid rgba(255,255,255,.08); }
-  nav button { flex:1; min-height:62px; background:#151413; color:rgba(242,240,236,.68);
-               font:600 10px/1.3 'JetBrains Mono', monospace; letter-spacing:.04em; }
+  nav button, nav a { flex:1; min-height:62px; background:#151413; color:rgba(242,240,236,.68);
+               font:600 10px/1.3 'JetBrains Mono', monospace; letter-spacing:.04em; text-align:center; }
+  nav a { text-decoration:none; }
   nav button[aria-current="page"] { background:#232120; color:#f2f0ec; }
   nav button.primary { background:#f5a524; color:#131211; font-weight:700; }
   .toast { position:absolute; left:14px; right:14px; bottom:78px; padding:13px 14px; border-radius:10px;
@@ -139,7 +140,7 @@ let S = {
   // — under another's name. Each entry carries the calls needed to replay it.
   outboxByUser: {},
   online: navigator.onLine, installable: false,
-  postQty: null, toast: '',
+  postQty: null, postScrap: 0, toast: '',
 };
 
 const TABS = ['runs', 'search', 'outbox'];
@@ -249,7 +250,7 @@ async function refresh() {
 
 // Bump on every deploy. Shown in the header and on the sign-in screen so a phone
 // serving a stale shell is identifiable without a console.
-const BUILD = '2026.09.14-7';
+const BUILD = '2026.09.14-14';
 
 const jobOf = (id) => S.jobs.filter((j) => j.jobId === id)[0];
 
@@ -260,6 +261,10 @@ const squash = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 // What the operator reads off the traveler. jobId is Fulcrum's 24-char ObjectId and
 // stays the API key only — it is never a label.
 const jobNo = (job) => String((job && (job.systemJobNumber != null ? job.systemJobNumber : job.jobId)) || '');
+const timerJobName = (t) => {
+  const j = jobOf(t.jobId);
+  return (j && j.jobName) || t.jobName || 'Job ' + timerJobNo(t);
+};
 const timerJobNo = (t) => {
   const j = jobOf(t.jobId);
   if (j) return jobNo(j);
@@ -529,7 +534,16 @@ const actions = {
       : 'Paused · ' + reason.toLowerCase() + ' recorded as equipment downtime');
   },
 
-  openComplete: (timerId) => set({ sheet: 'complete', timerId, postQty: null }),
+  openComplete: (timerId) => set({ sheet: 'complete', timerId, postQty: null, postScrap: 0 }),
+  // Scrap is captured here because nothing upstream records it: OEE's quality factor has
+  // no other source, and an operator closing a step is the only moment anyone knows the
+  // bad count. Fulcrum takes it on /complete; a partial post carries it for our own
+  // server to keep (see REPORTS-API.md).
+  bumpScrap: (d) => {
+    const cur = Number.isFinite(S.postScrap) ? S.postScrap : 0;
+    set({ postScrap: Math.max(0, cur + Number(d)) });
+  },
+  setScrap: (n) => set({ postScrap: Math.max(0, Number(n) || 0) }),
   bumpQty: (d) => {
     const t = timerOf(S.timerId), job = jobOf(t.jobId);
     const max = job.quantityRemaining;
@@ -550,6 +564,7 @@ const actions = {
     const qty = Number.isFinite(S.postQty) ? S.postQty : Math.min(1, open);
     if (!Number.isFinite(qty) || qty < 1) return;
     const closes = qty >= open;
+    const scrap = Number.isFinite(S.postScrap) ? S.postScrap : 0;
 
     set({ posting: true });
     const itemToMakeId = itemIdFor(job, t.operationId, t);
@@ -559,7 +574,7 @@ const actions = {
     const replay = []
       .concat(t.isPaused ? [{ path: '/timers/break/end', body: { userId: S.user.userId, timerId: t.timeEntryId } }] : [])
       .concat([{ path: '/timers/stop', body: { userId: S.user.userId, timerId: t.timeEntryId } }])
-      .concat([{ path: qtyPath, body: closes ? { quantity: qty, scrapQuantity: 0 } : { quantity: qty } }]);
+      .concat([{ path: qtyPath, body: closes ? { quantity: qty, scrapQuantity: scrap } : { quantity: qty, scrapQuantity: scrap } }]);
 
     const result = await write('complete ' + job.jobName + ' · ' + qty + ' pcs', async () => {
       // Close the server-side timer whenever it is still open. Keying this off isPaused
@@ -568,9 +583,9 @@ const actions = {
       if (t.isPaused) await api.resumeTimer({ userId: S.user.userId, timerId: t.timeEntryId });
       await api.stopTimer({ userId: S.user.userId, timerId: t.timeEntryId });
       if (closes) {
-        await api.completeOperation({ jobId: job.jobId, itemToMakeId: itemToMakeId, operationId: t.operationId, quantity: qty, scrapQuantity: 0 });
+        await api.completeOperation({ jobId: job.jobId, itemToMakeId: itemToMakeId, operationId: t.operationId, quantity: qty, scrapQuantity: scrap });
       } else {
-        await api.addQuantity({ jobId: job.jobId, itemToMakeId: itemToMakeId, operationId: t.operationId, quantity: qty });
+        await api.addQuantity({ jobId: job.jobId, itemToMakeId: itemToMakeId, operationId: t.operationId, quantity: qty, scrapQuantity: scrap });
       }
     }, replay);
 
@@ -579,7 +594,7 @@ const actions = {
     const nextPaused = { ...myPaused() };
     delete nextPaused[t.timeEntryId];
     set({
-      posting: false, sheet: null, screen: 'runs', postQty: null,
+      posting: false, sheet: null, screen: 'runs', postQty: null, postScrap: 0,
       ...setMyPaused(nextPaused),
       timers: S.timers.filter((x) => x.timeEntryId !== t.timeEntryId),
     });
@@ -890,11 +905,11 @@ function runsView() {
           <span class="mono" style="font-size:10px;font-weight:700;letter-spacing:.09em;color:${ink}">${t.isPaused ? 'PAUSED \u00b7 ' + esc((t.pauseReason || '').toUpperCase()) : 'RUNNING \u00b7 ' + esc(String(t.entryType).toUpperCase())}</span>
           <span class="mono" style="margin-left:auto;font-size:10.5px;color:rgba(242,240,236,.6)">${esc(t.equipmentId || (job && job.operations ? (curOp(job) || {}).workCenterName : ''))}</span>
         </div>
-        <div class="row" style="align-items:baseline">
-          <span class="mono" style="font-size:14px;font-weight:700">Job ${esc(timerJobNo(t))}</span>
-          <span class="mono" style="margin-left:auto;font-size:22px;color:${ink}">${fmt(secs)}</span>
+        <div class="row" style="align-items:flex-start;gap:8px">
+          <span style="flex:1;min-width:0;font:700 19px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(timerJobName(t))}</span>
+          <span class="mono" style="flex:none;font-size:22px;color:${ink}">${fmt(secs)}</span>
         </div>
-        <div style="font:400 12px/1.35 Helvetica,sans-serif;color:rgba(242,240,236,.72)">${esc(t.jobName)} \u00b7 ${esc(t.operationName)}</div>
+        <div class="mono" style="font-size:10.5px;color:rgba(242,240,236,.66)">Job ${esc(timerJobNo(t))} \u00b7 ${esc(t.operationName)}</div>
         ${qty != null ? `
           <div style="height:6px;border-radius:3px;background:rgba(255,255,255,.09);overflow:hidden">
             <div style="height:100%;border-radius:3px;background:${ink};width:${pct}%"></div>
@@ -966,13 +981,11 @@ function searchView() {
         <button data-act="openJob" data-arg="${esc(j.jobId)}" class="card job-row"
           data-search="${esc([jobNo(j), j.jobId, j.jobName, j.itemNumber, j.customerName].concat((j.operations || []).map((o) => o.operationName)).filter(Boolean).join(' ').toLowerCase())}"
           style="display:flex;flex-direction:column;gap:8px;padding:13px 14px;text-align:left">
-          <div class="row">
-            <span class="mono" style="font-size:13px;font-weight:700">Job ${esc(jobNo(j))}</span>
-            ${mine ? `<span class="mono" style="padding:2px 6px;border-radius:4px;background:rgba(46,212,122,.16);color:${GREEN};font-size:8.5px;font-weight:700;letter-spacing:.06em">YOURS IS OPEN</span>` : ''}
-            <span class="mono" style="margin-left:auto;font-size:10px;color:rgba(242,240,236,.6)">${esc(j.quantityRemaining)} / ${esc(j.quantity)} OPEN</span>
+          <div class="row" style="align-items:flex-start;gap:7px">
+            <span style="flex:1;min-width:0;font:700 19px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(j.jobName)}</span>
+            ${mine ? `<span class="mono" style="flex:none;padding:2px 6px;border-radius:4px;background:rgba(46,212,122,.16);color:${GREEN};font-size:8.5px;font-weight:700;letter-spacing:.06em">YOURS IS OPEN</span>` : ''}
           </div>
-          <div style="font:600 13px/1.25 Helvetica,sans-serif">${esc(j.jobName)}</div>
-          <div class="mono" style="font-size:10px;line-height:1.5;color:rgba(242,240,236,.6)">${esc(j.customerName || '')}${j.itemNumber ? ' \u00b7 ' + esc(j.itemNumber) : ''}</div>
+          <div class="mono" style="font-size:10px;line-height:1.5;color:rgba(242,240,236,.62)">Job ${esc(jobNo(j))} \u00b7 ${esc(j.quantityRemaining)} / ${esc(j.quantity)} OPEN${j.customerName ? ' \u00b7 ' + esc(j.customerName) : ''}${j.itemNumber ? ' \u00b7 ' + esc(j.itemNumber) : ''}</div>
           <div class="row" style="gap:7px">
             <span class="dot" style="background:${op.operationName ? AMBER : 'rgba(242,240,236,.35)'}"></span>
             <span class="mono" style="font-size:10.5px;color:${op.operationName ? AMBER : 'rgba(242,240,236,.5)'}">${esc(op.operationName || 'open to load the routing')}</span>
@@ -1071,8 +1084,8 @@ function timerView() {
     </div>
 
     <div style="display:flex;flex-direction:column;gap:5px">
-      <span class="mono" style="font-size:13px;font-weight:700">Job ${esc(timerJobNo(t))}</span>
-      <span style="font:400 13px/1.4 Helvetica,sans-serif;color:rgba(242,240,236,.75)">${esc(t.jobName)}</span>
+      <span style="font:700 21px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(timerJobName(t))}</span>
+      <span class="mono" style="font-size:11px;font-weight:700;color:rgba(242,240,236,.7)">Job ${esc(timerJobNo(t))}</span>
       <span class="mono" style="font-size:10.5px;color:rgba(242,240,236,.66)">${esc(t.operationName)}${qty != null ? ' \u00b7 ' + job.quantityRemaining + ' of ' + qty + ' open' : ' \u00b7 piece count unavailable'}</span>
     </div>
 
@@ -1230,6 +1243,7 @@ function completeSheet() {
     </div></div>`;
   const open = job.quantityRemaining;
   const qty = Number.isFinite(S.postQty) ? S.postQty : Math.min(1, open);
+  const scrap = Number.isFinite(S.postScrap) ? S.postScrap : 0;
   const closes = qty >= open;
   return `
   <div class="sheet-wrap"><div class="sheet">
@@ -1239,7 +1253,7 @@ function completeSheet() {
     </div>
     <div style="display:flex;flex-direction:column;gap:4px">
       <div style="font:700 17px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;text-transform:uppercase">${esc(t.operationName)}</div>
-      <div class="mono" style="font-size:10.5px;color:rgba(242,240,236,.66)">${esc(t.jobName)} \u00b7 ${fmt(secondsOf(t))}</div>
+      <div class="mono" style="font-size:10.5px;color:rgba(242,240,236,.66)">${esc(timerJobName(t))} \u00b7 ${fmt(secondsOf(t))}</div>
     </div>
     <div class="stepper">
       <button data-act="bumpQty" data-arg="-1" aria-label="One fewer">&minus;</button>
@@ -1252,6 +1266,17 @@ function completeSheet() {
       <button class="chip" data-act="setQty" data-arg="1" aria-pressed="${qty === 1}">1</button>
       <button class="chip" data-act="setQty" data-arg="${Math.max(1, Math.round(open / 2))}" aria-pressed="${qty === Math.max(1, Math.round(open / 2))}">HALF</button>
       <button class="chip" data-act="setQty" data-arg="${open}" aria-pressed="${qty === open}">ALL ${open}</button>
+    </div>
+
+    <div class="row">
+      <span class="label">SCRAP OR REWORK?</span>
+      <span class="mono" style="margin-left:auto;font-size:10px;color:rgba(242,240,236,.6)">${scrap ? scrap + ' BAD' : 'NONE'}</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="chip" data-act="setScrap" data-arg="0" aria-pressed="${scrap === 0}">NONE</button>
+      <button class="chip" data-act="bumpScrap" data-arg="1" aria-label="One more scrap">+1</button>
+      <button class="chip" data-act="bumpScrap" data-arg="-1" aria-label="One fewer scrap">&minus;1</button>
+      ${scrap ? `<span class="mono" style="display:flex;align-items:center;padding:0 10px;font-size:11px;font-weight:700;color:${RED}">${scrap}</span>` : ''}
     </div>
     <div style="padding:12px 13px;border-radius:9px;background:#131211;border:1px solid ${closes ? 'rgba(46,212,122,.35)' : 'rgba(255,255,255,.12)'}">
       <span class="mono" style="font-size:10.5px;line-height:1.5;color:rgba(242,240,236,.72)">
@@ -1331,6 +1356,7 @@ function navBar() {
     ${b('runs', 'MY RUNS', S.timers.filter((t) => !t.isPaused).length + ' ACTIVE')}
     ${b('search', 'SEARCH', 'JOBS')}
     ${b('outbox', 'HELD', myOutbox().length + ' QUEUED')}
+    <a href="./plan.html" class="mono" style="display:grid;place-items:center;text-decoration:none">ON<br>DECK</a>
     <button data-act="openScan" class="primary">SCAN A<br>TRAVELER</button>
   </nav>`;
 }
@@ -1391,7 +1417,19 @@ if ('serviceWorker' in navigator) {
 }
 
 const params = new URLSearchParams(location.search);
-if (params.get('action') === 'scan') S.screen = 'search';
+// ?action= names a landing view. 'scan' opens the scanner over the search screen; the
+// rest are tab names. The board's links use these, so a supervisor can reach any
+// operator view in one tap.
+const ACTIONS = { scan: 'search', search: 'search', runs: 'runs', held: 'outbox', outbox: 'outbox' };
+const wanted = ACTIONS[params.get('action')];
+if (wanted) S.screen = wanted;
+// The board and the report pages have no sign-in state of their own, so they hand the
+// job back here rather than each clearing the session themselves.
+if (params.get('action') === 'signout') {
+  S.signedIn = false; S.user = null; S.timers = []; S.screen = 'runs';
+  S.signInMode = S.nfc ? 'badge' : 'name';
+  persist();                                     // the cleared session has to survive the next load
+}
 if (!S.nfc) S.signInMode = 'name';
 
 // Landing rule: board-authorized people start on the floor board, everyone else starts

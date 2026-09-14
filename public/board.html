@@ -141,12 +141,11 @@ function machineCard(m) {
 
       ${r ? `
         <div style="display:flex;flex-direction:column;gap:5px;padding:11px 12px;border-radius:9px;background:#131211">
-          <div style="display:flex;align-items:baseline;gap:8px">
-            <span class="mono" style="font-size:12.5px;font-weight:700">Job ${esc(r.jobId)}</span>
-            <span class="mono" style="margin-left:auto;font-size:19px;color:${ink}">${hhmm(elapsed)}</span>
+          <div style="display:flex;align-items:flex-start;gap:8px">
+            <span style="flex:1;min-width:0;font:700 17px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(r.jobName || ('Job ' + r.jobId))}</span>
+            <span class="mono" style="flex:none;font-size:19px;color:${ink}">${hhmm(elapsed)}</span>
           </div>
-          <div style="font:400 12px/1.35 Helvetica,sans-serif;color:rgba(242,240,236,.75);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.jobName)}</div>
-          <div class="mono" style="font-size:10px;color:rgba(242,240,236,.7);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.operationName)} · ${esc(r.operatorName)}${done != null ? ' · ' + done + '/' + r.quantity + ' pcs' : ''}</div>
+          <div class="mono" style="font-size:10px;color:rgba(242,240,236,.7);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Job ${esc(r.jobId)} · ${esc(r.operationName)} · ${esc(r.operatorName)}${done != null ? ' · ' + done + '/' + r.quantity + ' pcs' : ''}</div>
         </div>`
       : `
         <div class="mono" style="padding:11px 12px;border-radius:9px;background:#131211;font-size:11px;color:rgba(242,240,236,.66)">
@@ -255,11 +254,20 @@ function render() {
   const kpi = (label, value, ink) =>
     `<div class="kpi"><span>${label}</span><span style="${ink ? 'color:' + ink : ''}">${value}</span></div>`;
 
+  // The board is a landing view for supervisors, so it has to be a way INTO the operator
+  // app, not a dead end — ?stay=1 stops the launch rule bouncing them straight back here.
+  const opLink = (href, label, primary) =>
+    `<a class="mono" href="./${href}" style="display:flex;align-items:center;min-height:44px;padding:0 14px;border-radius:9px;text-decoration:none;
+      font-size:10.5px;font-weight:600;letter-spacing:.05em;
+      background:${primary ? 'rgba(245,165,36,.13)' : 'rgba(255,255,255,.05)'};
+      border:1px solid ${primary ? 'rgba(245,165,36,.4)' : 'rgba(255,255,255,.14)'};
+      color:${primary ? AMBER : 'rgba(242,240,236,.82)'}">${label}</a>`;
+
   el.innerHTML = `
   <div class="bar">
     <h1>Floor board</h1>
     <span class="mono" style="padding:4px 9px;border-radius:5px;background:rgba(46,212,122,.14);color:${GREEN};font-size:10px;font-weight:700;letter-spacing:.07em">LIVE</span>
-    <div style="margin-left:auto;display:flex;flex-wrap:wrap;gap:14px 26px">
+    <div style="margin-left:auto;display:flex;flex-wrap:wrap;align-items:center;gap:14px 26px">
       ${kpi('CNC UTIL · CUT+SETUP', show(shopUtil) + '%', inkFor(shopUtil))}
       ${kpi('SPINDLE UTIL · CUT ONLY', show(shopSpindle) + '%', inkFor(shopSpindle))}
       ${kpi('CUTTING NOW', running.length + ' / ' + cnc.length, running.length ? GREEN : RED)}
@@ -267,7 +275,21 @@ function render() {
       ${kpi('DOWN', String(down.length), down.length ? RED : null)}
       ${kpi('OPERATORS ON JOBS', String(onShift), null)}
       ${kpi('READ AT', asOfLabel(F.asOfUtc), null)}
+      <a class="mono" href="./index.html?stay=1&action=signout" style="display:flex;align-items:center;min-height:44px;padding:0 14px;border-radius:9px;text-decoration:none;
+        font-size:9.5px;font-weight:600;letter-spacing:.06em;background:rgba(255,255,255,.06);
+        border:1px solid rgba(255,255,255,.16);color:rgba(242,240,236,.72)">SIGN OUT</a>
     </div>
+  </div>
+
+  <div style="display:flex;flex-wrap:wrap;gap:8px;padding:11px clamp(14px,2.5vw,26px);background:#1b1a18;border-bottom:1px solid rgba(255,255,255,.08)">
+    ${opLink('reports.html', 'Reports · OLE + OEE', true)}
+    ${opLink('pm.html', 'Project management')}
+    ${opLink('plan.html', 'What\u2019s on deck')}
+    ${opLink('plan.html#late', 'Late jobs')}
+    ${opLink('index.html?stay=1&action=scan', 'Scan a traveler')}
+    ${opLink('index.html?stay=1&action=search', 'Search jobs')}
+    ${opLink('index.html?stay=1&action=runs', 'My runs')}
+    ${opLink('index.html?stay=1&action=held', 'Held writes')}
   </div>
 
   <div class="wrap cols">
@@ -295,7 +317,7 @@ function render() {
                 <span class="mono" style="margin-left:auto;font-size:8.5px;font-weight:600;letter-spacing:.05em;color:${ink}">${LABEL[c.state]}</span>
               </div>
               <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.68);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.workCenterName)}</span>
-              <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.run ? 'Job ' + esc(c.run.jobId) + ' · ' + esc(c.run.operatorName) : '&mdash;'}</span>
+              <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.run ? esc(c.run.jobName || ('Job ' + c.run.jobId)) + ' · ' + esc(c.run.operatorName) : '&mdash;'}</span>
             </div>`;
           }).join('')}
         </div>

@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#131211">
+<title>On deck — Fulcrum Shop Floor</title>
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Barlow+Semi+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; min-height:100%; }
+  body{
+    background:#131211; color:#f2f0ec;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  .mono{ font-family:'JetBrains Mono',ui-monospace,monospace; }
+  h1{ margin:0; font:700 26px/1 'Barlow Semi Condensed',Helvetica,sans-serif; text-transform:uppercase; letter-spacing:.01em; }
+  h2{ margin:0; font:600 10px/1 'JetBrains Mono',monospace; letter-spacing:.11em; color:rgba(242,240,236,.66); text-transform:uppercase; }
+  a{ color:#f5a524; }
+  a:hover{ color:#ffc35c; }
+  button{ font-family:inherit; color:inherit; cursor:pointer; border:none; background:none; }
+  .wrap{ max-width:1500px; margin:0 auto; padding:16px clamp(12px,2.5vw,26px) 40px; }
+  .bar{ display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px;
+        padding:14px clamp(12px,2.5vw,26px); background:#1b1a18;
+        border-bottom:1px solid rgba(255,255,255,.08); }
+  .navrow{ display:flex; flex-wrap:wrap; gap:8px; padding:10px clamp(12px,2.5vw,26px);
+           background:#1b1a18; border-bottom:1px solid rgba(255,255,255,.08); }
+  .card{ background:#1b1a18; border:1px solid rgba(255,255,255,.08); border-radius:11px; }
+  .note{ font:400 10.5px/1.55 'JetBrains Mono',monospace; color:rgba(242,240,236,.62); }
+  .rows{ display:flex; flex-direction:column; gap:8px; }
+  .picker{ display:flex; flex-wrap:wrap; gap:7px; }
+  .cols{ display:grid; gap:18px; grid-template-columns:minmax(0,1fr); }
+  /* Slow on purpose: three days late is a nudge, not an alarm, and a fast blink on a wall
+     display becomes something people stop seeing. Respects reduced-motion. */
+  @keyframes slowflash{ 0%,100%{ opacity:1 } 50%{ opacity:.28 } }
+  .slowflash{ animation:slowflash 2.4s ease-in-out infinite; }
+  @media (prefers-reduced-motion:reduce){ .slowflash{ animation:none; } }
+  @media (min-width:1000px){ .cols{ grid-template-columns:260px minmax(0,1fr); } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { api } from './api.js';
+
+const GREEN = '#2ed47a', AMBER = '#f5a524', RED = '#ff8a7d', BLUE = '#8fb4ff';
+const el = document.getElementById('app');
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+// Deliberately NO role gate: every operator needs to know what is on deck at their own
+// station, and which customer jobs are late. Only the reports and the floor board are
+// supervisor-scoped.
+const STORE = 'shopfloor.state.v1';
+const sessionUser = () => {
+  try { return (JSON.parse(localStorage.getItem(STORE) || 'null') || {}).user || null; } catch (e) { return null; }
+};
+
+const TABS = { machines: 'machines', areas: 'areas', late: 'late' };
+let TAB = TABS[(location.hash || '').replace('#', '')] || 'machines';
+let PICK = null;                       // selected machine / area name
+
+let JOBS = undefined;                  // open job set (one read, works today)
+let RUNNING = undefined;               // active runs, for "running now"
+let STATIONS = [];                     // every machine and bench from the equipment master
+let SCHED = { state: 'idle', ops: [], done: 0, total: 0 };  // routing join
+
+const day = (iso) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+};
+// Midnight-normalised on both sides. Raw elapsed-ms flooring made a row say "11 days
+// late" and "scheduled to finish 12 days ago" about the same timestamp.
+const midnight = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const dayDiff = (iso) => {
+  const d = day(iso);
+  if (!d) return null;
+  return Math.round((midnight(new Date()) - midnight(d)) / 86400000);
+};
+const dayLabel = (iso) => {
+  const diff = dayDiff(iso);
+  if (diff == null) return 'unscheduled';
+  if (diff === 0) return 'today';
+  if (diff === -1) return 'tomorrow';
+  if (diff === 1) return 'yesterday';
+  if (diff > 0) return diff + ' days ago';
+  return 'in ' + Math.abs(diff) + ' days';
+};
+const daysLate = (iso) => dayDiff(iso);
+
+// The planned date itself, not only how long ago it was — a planner needs the date to
+// hold a conversation with the customer about it.
+const dateLabel = (iso) => {
+  const d = day(iso);
+  return d ? d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : 'none set';
+};
+
+// ---- shell ---------------------------------------------------------------------------
+
+const link = (href, label, on) => `
+  <a class="mono" href="${href}" style="display:flex;align-items:center;min-height:44px;padding:0 13px;border-radius:9px;text-decoration:none;
+    font-size:10.5px;font-weight:600;letter-spacing:.05em;
+    background:${on ? 'rgba(245,165,36,.13)' : 'rgba(255,255,255,.05)'};
+    border:1px solid ${on ? 'rgba(245,165,36,.4)' : 'rgba(255,255,255,.14)'};
+    color:${on ? AMBER : 'rgba(242,240,236,.82)'}">${label}</a>`;
+
+const tab = (id, label) => `
+  <button data-tab="${id}" style="min-height:44px;padding:0 14px;border-radius:9px;
+    font:600 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.05em;
+    background:${TAB === id ? 'rgba(143,180,255,.13)' : 'rgba(255,255,255,.05)'};
+    border:1px solid ${TAB === id ? 'rgba(143,180,255,.42)' : 'rgba(255,255,255,.14)'};
+    color:${TAB === id ? BLUE : 'rgba(242,240,236,.82)'}">${label}</button>`;
+
+const chip = (name, count, on) => `
+  <button data-pick="${esc(name)}" style="display:flex;align-items:center;gap:7px;min-height:44px;padding:0 12px;border-radius:9px;
+    font:600 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.04em;text-align:left;
+    background:${on ? 'rgba(245,165,36,.14)' : 'rgba(255,255,255,.05)'};
+    border:1px solid ${on ? 'rgba(245,165,36,.42)' : 'rgba(255,255,255,.13)'};
+    color:${on ? AMBER : 'rgba(242,240,236,.85)'}">
+    <span>${esc(name)}</span>
+    <span class="mono" style="font-size:9px;color:rgba(242,240,236,.55)">${count}</span>
+  </button>`;
+
+// ---- schedule join ------------------------------------------------------------------
+// One routing read per open job. Run at a small concurrency with visible progress rather
+// than 50 parallel requests, and never automatically — a wall display refreshing this
+// every minute would be 50 upstream fan-outs a minute.
+
+async function loadSchedule() {
+  if (!Array.isArray(JOBS) || SCHED.state === 'loading') return;
+  SCHED = { state: 'loading', ops: [], done: 0, total: JOBS.length };
+  render();
+  const out = [];
+  const queue = JOBS.slice();
+  const worker = async () => {
+    while (queue.length) {
+      const j = queue.shift();
+      const ops = await api.routingFor(j.jobId);
+      ops.forEach((o) => { if (!o.isComplete) out.push({ ...o, job: j }); });
+      SCHED.done++;
+      if (SCHED.done % 5 === 0 || !queue.length) { SCHED.ops = out; render(); }
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  SCHED = { state: 'ready', ops: out, done: JOBS.length, total: JOBS.length };
+  render();
+}
+
+// Machines come from the equipment master; areas are the operation names themselves,
+// which is what a deburr or inspection bench actually knows itself by — operations carry
+// no work-center field, so grouping by name is the honest grouping.
+const groupKey = (op) => (TAB === 'machines'
+  ? (op.scheduledEquipmentName || null)
+  : (op.operationName || '').replace(/^\s*\d+[.)]?\s*/, '').trim() || null);
+
+function groups() {
+  const map = {};
+  SCHED.ops.forEach((op) => {
+    const k = groupKey(op);
+    if (!k) return;
+    (map[k] ||= []).push(op);
+  });
+  Object.values(map).forEach((list) => list.sort((a, b) => {
+    const A = day(a.scheduledStartUtc), B = day(b.scheduledStartUtc);
+    if (A && B) return A - B;
+    if (A) return -1;
+    if (B) return 1;
+    return 0;
+  }));
+  return map;
+}
+
+const runningHere = (name) => (RUNNING || []).filter((r) => r.equipmentName === name);
+
+function opRow(op, i) {
+  const late = daysLate(op.scheduledEndUtc);
+  const ink = i === 0 ? GREEN : 'rgba(242,240,236,.85)';
+  return `
+  <a class="card" href="./index.html?stay=1&action=search" style="display:flex;flex-direction:column;gap:7px;padding:11px 12px;text-decoration:none;color:inherit;
+    border-left:3px solid ${i === 0 ? GREEN : 'rgba(255,255,255,.1)'}">
+    <div style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px 10px">
+      <span style="flex:1;min-width:0;font:700 18px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;color:${ink};overflow-wrap:anywhere">${esc(op.job.jobName)}</span>
+      <span class="mono" style="flex:none;font-size:9.5px;color:${late > 0 ? RED : 'rgba(242,240,236,.6)'}">
+        ${op.scheduledStartUtc ? dayLabel(op.scheduledStartUtc) : 'unscheduled'}
+      </span>
+    </div>
+    <div class="mono" style="font-size:10px;line-height:1.5;color:rgba(242,240,236,.62)">
+      Job ${esc(op.job.systemJobNumber)} · ${esc(op.operationName)}${op.job.customerName ? ' · ' + esc(op.job.customerName) : ''}${op.job.quantityRemaining != null ? ' · ' + esc(op.job.quantityRemaining) + ' open' : ''}
+    </div>
+  </a>`;
+}
+
+function queueView() {
+  const map = groups();
+  const names = TAB === 'machines'
+    // Seeded from the equipment master, not from what happens to be running or scheduled:
+    // an idle machine with no scheduled work is exactly the one someone comes here to check.
+    ? Array.from(new Set(STATIONS.concat(Object.keys(map)))).filter(Boolean).sort()
+    : Object.keys(map).sort();
+  if (PICK && names.indexOf(PICK) < 0) PICK = null;
+  const pick = PICK || names[0] || null;
+  const list = pick ? (map[pick] || []) : [];
+  const now = TAB === 'machines' && pick ? runningHere(pick) : [];
+
+  const progress = SCHED.state === 'loading'
+    ? `<div class="card" style="padding:11px 12px"><span class="note">Reading routings… ${SCHED.done} of ${SCHED.total} jobs.</span></div>`
+    : SCHED.state === 'idle'
+      ? `<div class="card" style="padding:13px 12px;display:flex;flex-direction:column;gap:9px">
+          <span class="note">The schedule is one routing read per open job — ${Array.isArray(JOBS) ? JOBS.length : 0} requests — so it loads on request rather than on every visit.</span>
+          <button data-load="1" class="mono" style="min-height:48px;border-radius:9px;background:rgba(245,165,36,.13);border:1px solid rgba(245,165,36,.4);color:${AMBER};font-size:11px;font-weight:700;letter-spacing:.05em">LOAD THE SCHEDULE</button>
+        </div>`
+      : '';
+
+  return `
+  ${progress}
+  <div class="cols">
+    <div style="display:flex;flex-direction:column;gap:9px">
+      <h2>${TAB === 'machines' ? 'Machines' : 'Operations'} · ${names.length}</h2>
+      <div class="picker" style="flex-direction:column">
+        ${names.length
+          ? names.map((n) => chip(n, (map[n] || []).length, n === pick)).join('')
+          : `<span class="note">${TAB === 'machines' ? 'The equipment list could not be read.' : (SCHED.state === 'ready' ? 'No scheduled work found.' : 'Load the schedule to see operations.')}</span>`}
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+      ${pick ? `
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:9px">
+          <h1>${esc(pick)}</h1>
+          <span class="mono" style="font-size:10.5px;color:rgba(242,240,236,.6)">${list.length} step${list.length === 1 ? '' : 's'} not yet complete</span>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <h2>Running now</h2>
+          ${now.length
+            ? now.map((r) => `
+              <div class="card" style="padding:11px 12px;display:flex;flex-direction:column;gap:6px;border-left:3px solid ${GREEN}">
+                <div style="display:flex;flex-wrap:wrap;gap:6px 10px;align-items:flex-start">
+                  <span style="flex:1;min-width:0;font:700 18px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;color:${GREEN};overflow-wrap:anywhere">${esc(r.jobName || ('Job ' + r.jobId))}</span>
+                  <span class="mono" style="flex:none;font-size:9.5px;color:rgba(242,240,236,.6)">${esc(r.operatorName || '')}</span>
+                </div>
+                <div class="mono" style="font-size:10px;color:rgba(242,240,236,.62)">Job ${esc(r.jobId)}${r.operationName ? ' · ' + esc(r.operationName) : ''}</div>
+              </div>`).join('')
+            : `<div class="card" style="padding:11px 12px"><span class="note">${TAB === 'machines' ? 'Nothing clocked onto this machine right now.' : 'Running state is tracked per machine, not per operation.'}</span></div>`}
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <h2>Next up</h2>
+          ${list.length
+            ? `<div class="rows">${list.slice(0, 1).map((op, i) => opRow(op, i)).join('')}</div>`
+            : `<div class="card" style="padding:11px 12px"><span class="note">${SCHED.state === 'ready' ? 'Nothing scheduled here.' : 'Load the schedule to see what is queued here.'}</span></div>`}
+        </div>
+
+        ${list.length > 1 ? `
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <h2>Then · ${list.length - 1} more</h2>
+          <div class="rows">${list.slice(1).map((op, i) => opRow(op, i + 1)).join('')}</div>
+        </div>` : ''}
+      ` : ''}
+    </div>
+  </div>`;
+}
+
+// ---- late jobs ----------------------------------------------------------------------
+// Needs only the open job list, so this tab works today with no new server work:
+// scheduledEndUtc in the past on a job that is not complete is late.
+
+function lateView() {
+  if (JOBS === undefined) return `<span class="note">Loading…</span>`;
+  if (!Array.isArray(JOBS)) {
+    return `<div class="card" style="padding:14px 13px"><span class="note">The job list could not be read, so nothing can be called late.</span></div>`;
+  }
+  const late = JOBS
+    .map((j) => ({ j, over: daysLate(j.scheduledEndUtc) }))
+    .filter((x) => x.over != null && x.over > 0)
+    .sort((a, b) => b.over - a.over);
+
+  const byCustomer = {};
+  late.forEach((x) => {
+    const k = x.j.customerName || 'No customer on job';
+    (byCustomer[k] ||= []).push(x);
+  });
+  const customers = Object.keys(byCustomer).sort((a, b) => byCustomer[b].length - byCustomer[a].length);
+
+  return `
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">
+      <h1>Late jobs</h1>
+      <span class="mono" style="font-size:11px;color:${late.length ? RED : GREEN}">
+        ${late.length} of ${JOBS.length} open jobs past their scheduled finish
+      </span>
+    </div>
+
+    ${late.length ? customers.map((c) => `
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <h2>${esc(c)} · ${byCustomer[c].length}</h2>
+        <div class="rows">
+          ${byCustomer[c].map(({ j, over }) => `
+            <div class="card" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px 16px;padding:12px 14px;border-left:3px solid ${over > 14 ? RED : AMBER}">
+              <div style="display:flex;flex-direction:column;gap:2px;min-width:76px">
+                <span class="mono${over >= 3 ? ' slowflash' : ''}" style="font:700 34px/1 'JetBrains Mono',monospace;color:${over > 14 ? RED : AMBER}">${over}</span>
+                <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.08em;color:rgba(242,240,236,.6)">DAY${over === 1 ? '' : 'S'} LATE</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:5px;min-width:0;flex:1">
+                <span style="font:700 21px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(j.jobName)}</span>
+                <div class="mono" style="font-size:10px;line-height:1.5;color:rgba(242,240,236,.6)">
+                  Job ${esc(j.systemJobNumber)}${j.itemNumber ? ' · ' + esc(j.itemNumber) : ''}${j.quantityRemaining != null ? ' · ' + esc(j.quantityRemaining) + ' of ' + esc(j.quantity) + ' open' : ''}
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:3px;padding:9px 12px;border-radius:9px;background:#131211;border:1px solid ${over > 14 ? 'rgba(226,73,59,.42)' : 'rgba(245,165,36,.38)'}">
+                <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.07em;color:rgba(242,240,236,.62)">PLANNED COMPLETION</span>
+                <span class="mono" style="font-size:15px;font-weight:700;color:${over > 14 ? RED : AMBER}">${dateLabel(j.scheduledEndUtc)}</span>
+                <span class="mono" style="font-size:8.5px;color:rgba(242,240,236,.55)">${dayLabel(j.scheduledEndUtc)}</span>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>`).join('')
+    : `<div class="card" style="padding:14px 13px"><span class="note">Nothing open is past its scheduled finish date.</span></div>`}
+
+    <div class="card" style="padding:12px 13px;display:flex;flex-direction:column;gap:6px">
+      <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.07em;color:${AMBER}">WHAT COUNTS AS LATE</span>
+      <span class="note" style="max-width:74ch">
+        A job is late when its scheduled finish date has passed and it is still open. That is Fulcrum's
+        <strong style="color:rgba(242,240,236,.85);font-weight:500">scheduledEndUtc</strong>, not a customer promise date —
+        the jobs read has no promise date on it, and every job in the current set has an empty production due date.
+        Grouped by customer, most-late first.
+      </span>
+    </div>
+  </div>`;
+}
+
+// ---- render -------------------------------------------------------------------------
+
+function render() {
+  const u = sessionUser();
+  el.innerHTML = `
+  <div class="bar">
+    <h1 style="font-size:20px">On deck</h1>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      ${tab('machines', 'BY MACHINE')}
+      ${tab('areas', 'BY OPERATION')}
+      ${tab('late', 'LATE JOBS')}
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+      ${u ? `<span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.6)">${esc(u.name)}</span>` : ''}
+      <a class="mono" href="./index.html?stay=1${u ? '&action=signout' : ''}" style="display:flex;align-items:center;min-height:44px;padding:0 13px;border-radius:9px;text-decoration:none;
+        font-size:9.5px;font-weight:600;letter-spacing:.06em;background:rgba(255,255,255,.06);
+        border:1px solid rgba(255,255,255,.16);color:rgba(242,240,236,.72)">${u ? 'SIGN OUT' : 'SIGN IN'}</a>
+    </div>
+  </div>
+  <div class="navrow">
+    ${link('./index.html?stay=1&action=scan', 'Scan a traveler')}
+    ${link('./index.html?stay=1&action=search', 'Search jobs')}
+    ${link('./index.html?stay=1&action=runs', 'My runs')}
+    ${link('./board.html', 'Floor board')}
+    ${link('./pm.html', 'Project management')}
+  </div>
+  <div class="wrap" style="display:flex;flex-direction:column;gap:18px">
+    ${TAB === 'late' ? lateView() : queueView()}
+    <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
+  </div>`;
+}
+
+el.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-tab]');
+  if (t) { TAB = t.dataset.tab; location.hash = '#' + TAB; PICK = null; render(); return; }
+  const p = e.target.closest('[data-pick]');
+  if (p) { PICK = p.dataset.pick; render(); return; }
+  if (e.target.closest('[data-load]')) loadSchedule();
+});
+
+window.addEventListener('hashchange', () => {
+  const next = TABS[(location.hash || '').replace('#', '')];
+  if (next && next !== TAB) { TAB = next; PICK = null; render(); }
+});
+
+async function load() {
+  render();
+  const [jobs, floor] = await Promise.all([
+    api.searchJobs('').then((r) => r.items, () => null),
+    api.floorStatus().then((f) => f, () => null),
+  ]);
+  JOBS = jobs;
+  const all = floor ? floor.machines.concat(floor.support) : [];
+  STATIONS = all.map((m) => m.name || m.equipmentId).filter(Boolean);
+  RUNNING = all.flatMap((m) => m.runs.map((r) => ({ ...r, equipmentName: m.name || m.equipmentId })));
+  render();
+}
+
+load();
+</script>
+</body>
+</html>

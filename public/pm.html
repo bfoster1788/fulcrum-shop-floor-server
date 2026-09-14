@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#131211">
+<title>Project management — Fulcrum Shop Floor</title>
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Barlow+Semi+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; min-height:100%; }
+  body{
+    background:#131211; color:#f2f0ec;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  .mono{ font-family:'JetBrains Mono',ui-monospace,monospace; }
+  h1{ margin:0; font:700 22px/1 'Barlow Semi Condensed',Helvetica,sans-serif; text-transform:uppercase; letter-spacing:.01em; }
+  h2{ margin:0; font:600 10px/1 'JetBrains Mono',monospace; letter-spacing:.11em; color:rgba(242,240,236,.66); text-transform:uppercase; }
+  /* Numbered section headers: this page is read top-to-bottom as a review agenda, so the
+     four headings need to be findable at a glance, not the same weight as a sub-label. */
+  .sect{ margin:0; font:700 25px/1.1 'Barlow Semi Condensed',Helvetica,sans-serif;
+         text-transform:uppercase; letter-spacing:.01em; color:#f2f0ec;
+         padding-bottom:9px; border-bottom:1px solid rgba(255,255,255,.12); }
+  .sect span{ color:rgba(245,165,36,.9); }
+  a{ color:#f5a524; }
+  a:hover{ color:#ffc35c; }
+  button{ font-family:inherit; color:inherit; cursor:pointer; border:none; background:none; }
+  .wrap{ max-width:1500px; margin:0 auto; padding:16px clamp(12px,2.5vw,26px) 40px; }
+  .bar{ display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px;
+        padding:14px clamp(12px,2.5vw,26px); background:#1b1a18;
+        border-bottom:1px solid rgba(255,255,255,.08); }
+  .navrow{ display:flex; flex-wrap:wrap; gap:8px; padding:10px clamp(12px,2.5vw,26px);
+           background:#1b1a18; border-bottom:1px solid rgba(255,255,255,.08); }
+  .card{ background:#1b1a18; border:1px solid rgba(255,255,255,.08); border-radius:11px; }
+  .note{ font:400 10.5px/1.55 'JetBrains Mono',monospace; color:rgba(242,240,236,.62); }
+  .rows{ display:flex; flex-direction:column; gap:8px; }
+  .kpis{ display:grid; gap:9px; grid-template-columns:repeat(auto-fit,minmax(min(100%,168px),1fr)); }
+  @keyframes slowflash{ 0%,100%{ opacity:1 } 50%{ opacity:.28 } }
+  .slowflash{ animation:slowflash 2.4s ease-in-out infinite; }
+  @media (prefers-reduced-motion:reduce){ .slowflash{ animation:none; } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { api } from './api.js';
+
+const GREEN = '#2ed47a', AMBER = '#f5a524', RED = '#ff8a7d', BLUE = '#8fb4ff';
+const el = document.getElementById('app');
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+// Management view: same role list as the floor board and the reports. A visibility gate,
+// not security — the reads behind it are ungated on the server.
+const STORE = 'shopfloor.state.v1';
+const BOARD_ROLES = ['administrator', 'production supervisor', 'quality manager', 'quality supervisor'];
+const sessionUser = () => {
+  try { return (JSON.parse(localStorage.getItem(STORE) || 'null') || {}).user || null; } catch (e) { return null; }
+};
+const mayView = (u) => !!u && BOARD_ROLES.indexOf(String(u.role || '').trim().toLowerCase()) > -1;
+
+let JOBS = undefined;
+let MATERIAL = undefined;      // /api/materials/backlog — null when the route is absent
+let ONTIME = undefined;        // /api/reports/on-time  — null when the route is absent
+let SCHED = { state: 'idle', ops: [], done: 0, total: 0 };
+
+const day = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d.getTime()) ? d : null; };
+const midnight = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+// Positive = overdue by that many days, negative = that many days from now.
+const dayDiff = (iso) => { const d = day(iso); return d ? Math.round((midnight(new Date()) - midnight(d)) / 86400000) : null; };
+const dateLabel = (iso) => {
+  const d = day(iso);
+  return d ? d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : 'none set';
+};
+const relLabel = (iso) => {
+  const n = dayDiff(iso);
+  if (n == null) return 'no date';
+  if (n === 0) return 'due today';
+  if (n === 1) return '1 day late';
+  if (n > 1) return n + ' days late';
+  if (n === -1) return 'due tomorrow';
+  return 'due in ' + Math.abs(n) + ' days';
+};
+
+const link = (href, label, on) => `
+  <a class="mono" href="${href}" style="display:flex;align-items:center;min-height:44px;padding:0 13px;border-radius:9px;text-decoration:none;
+    font-size:10.5px;font-weight:600;letter-spacing:.05em;
+    background:${on ? 'rgba(245,165,36,.13)' : 'rgba(255,255,255,.05)'};
+    border:1px solid ${on ? 'rgba(245,165,36,.4)' : 'rgba(255,255,255,.14)'};
+    color:${on ? AMBER : 'rgba(242,240,236,.82)'}">${label}</a>`;
+
+const kpi = (label, value, sub, ink) => `
+  <div style="display:flex;flex-direction:column;gap:5px;padding:11px 12px;border-radius:9px;background:#1b1a18;border:1px solid rgba(255,255,255,.1)">
+    <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.07em;color:rgba(242,240,236,.62)">${label}</span>
+    <span class="mono" style="font-size:22px;font-weight:700;line-height:1;color:${ink || 'rgba(242,240,236,.92)'}">${value}</span>
+    <span class="mono" style="font-size:8.5px;color:rgba(242,240,236,.52)">${sub}</span>
+  </div>`;
+
+// Every block that cannot be filled names the route that would fill it. A zero here would
+// read as "nothing is late", which is a claim this page has no basis for.
+const awaiting = (what, route, why) => `
+  <div style="padding:18px 15px;border:1px dashed rgba(245,165,36,.45);border-radius:11px;display:flex;flex-direction:column;gap:8px">
+    <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.07em;color:${AMBER}">AWAITING DATA · ${esc(what)}</span>
+    <span class="mono" style="font-size:11px;line-height:1.6;color:rgba(242,240,236,.72)">
+      Needs <strong style="font-weight:500">GET ${esc(route)}</strong>. ${why}
+    </span>
+    <span class="mono" style="font-size:10px;line-height:1.6;color:rgba(242,240,236,.55)">Response shape is specified in REPORTS-API.md.</span>
+  </div>`;
+
+const pct = (n) => (n == null ? '—' : Math.round(n) + '%');
+const otd = (o) => (o && o.total ? (o.onTime / o.total) * 100 : null);
+const otdInk = (n) => (n == null ? 'rgba(242,240,236,.5)' : n >= 95 ? GREEN : n >= 85 ? AMBER : RED);
+
+// ---- outside processing (live, from the routing join) --------------------------------
+
+async function loadSchedule() {
+  if (!Array.isArray(JOBS) || SCHED.state === 'loading') return;
+  SCHED = { state: 'loading', ops: [], done: 0, total: JOBS.length };
+  render();
+  const out = [];
+  const queue = JOBS.slice();
+  const worker = async () => {
+    while (queue.length) {
+      const j = queue.shift();
+      const ops = await api.routingFor(j.jobId);
+      ops.forEach((o) => { if (!o.isComplete && o.isOutsideProcessing) out.push({ ...o, job: j }); });
+      SCHED.done++;
+      if (SCHED.done % 5 === 0 || !queue.length) { SCHED.ops = out; render(); }
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  SCHED = { state: 'ready', ops: out, done: JOBS.length, total: JOBS.length };
+  render();
+}
+
+function ospView() {
+  if (SCHED.state === 'idle') {
+    return `<div class="card" style="padding:13px 12px;display:flex;flex-direction:column;gap:9px">
+      <span class="note">Outside-processing steps are read from each job's routing — ${Array.isArray(JOBS) ? JOBS.length : 0} requests — so this loads on request.</span>
+      <button data-load="1" class="mono" style="min-height:48px;border-radius:9px;background:rgba(245,165,36,.13);border:1px solid rgba(245,165,36,.4);color:${AMBER};font-size:11px;font-weight:700;letter-spacing:.05em">LOAD OUTSIDE PROCESSING</button>
+    </div>`;
+  }
+  if (SCHED.state === 'loading') {
+    return `<div class="card" style="padding:11px 12px"><span class="note">Reading routings… ${SCHED.done} of ${SCHED.total} jobs.</span></div>`;
+  }
+  const rows = SCHED.ops
+    .map((op) => ({ op, over: dayDiff(op.scheduledEndUtc) }))
+    // Undated steps sort last: they are not "due soon", they are unknown.
+    .sort((a, b) => {
+      if (a.over == null && b.over == null) return 0;
+      if (a.over == null) return 1;
+      if (b.over == null) return -1;
+      return b.over - a.over;
+    });
+  const dated = rows.filter((r) => r.over != null);
+  const late = dated.filter((r) => r.over > 0);
+  const undated = rows.length - dated.length;
+
+  if (!rows.length) {
+    return `<div class="card" style="padding:13px 12px"><span class="note">No open outside-processing steps on the current job set.</span></div>`;
+  }
+  return `
+    ${dated.length
+      ? `<div class="mono" style="font-size:10.5px;color:${late.length ? RED : GREEN}">
+          ${late.length} of ${dated.length} dated outside-processing steps are past their scheduled return${undated ? ` \u00b7 ${undated} carry no planned return date` : ''}
+        </div>`
+      : `<div class="mono" style="font-size:10.5px;color:${AMBER}">
+          ${rows.length} open outside-processing step${rows.length === 1 ? '' : 's'}, none with a planned return date \u2014 lateness cannot be measured from the routing alone. The date to judge these on is the purchase-order expected date, which needs /api/materials/backlog.
+        </div>`}
+    <div class="rows">
+      ${rows.map(({ op, over }) => `
+        <div class="card" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px 16px;padding:12px 14px;border-left:3px solid ${over > 0 ? (over > 14 ? RED : AMBER) : 'rgba(255,255,255,.1)'}">
+          ${over != null && over > 0 ? `
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:70px">
+              <span class="mono${over >= 3 ? ' slowflash' : ''}" style="font:700 30px/1 'JetBrains Mono',monospace;color:${over > 14 ? RED : AMBER}">${over}</span>
+              <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.08em;color:rgba(242,240,236,.6)">DAY${over === 1 ? '' : 'S'} LATE</span>
+            </div>` : ''}
+          <div style="display:flex;flex-direction:column;gap:5px;min-width:0;flex:1">
+            <span style="font:700 19px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(op.job.jobName)}</span>
+            <div class="mono" style="font-size:10px;line-height:1.5;color:rgba(242,240,236,.62)">
+              Job ${esc(op.job.systemJobNumber)} · ${esc(op.operationName)}${op.job.customerName ? ' · ' + esc(op.job.customerName) : ''}
+            </div>
+            <div class="mono" style="font-size:9.5px;color:rgba(242,240,236,.5)">
+              ${op.associatedPurchaseOrderIds && op.associatedPurchaseOrderIds.length
+                ? op.associatedPurchaseOrderIds.length + ' purchase order' + (op.associatedPurchaseOrderIds.length === 1 ? '' : 's') + ' linked'
+                : 'No purchase order linked to this step'}
+              ${op.leadTimeInDays ? ' · ' + esc(op.leadTimeInDays) + ' day lead time' : ''}
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px;padding:9px 12px;border-radius:9px;background:#131211;border:1px solid rgba(255,255,255,.12)">
+            <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.07em;color:rgba(242,240,236,.62)">PLANNED RETURN</span>
+            <span class="mono" style="font-size:14px;font-weight:700;color:${over > 0 ? (over > 14 ? RED : AMBER) : 'rgba(242,240,236,.9)'}">${dateLabel(op.scheduledEndUtc)}</span>
+            <span class="mono" style="font-size:8.5px;color:rgba(242,240,236,.55)">${relLabel(op.scheduledEndUtc)}</span>
+          </div>
+        </div>`).join('')}
+    </div>
+    <span class="note" style="max-width:74ch">
+      Lateness here is judged on the routing's planned return date, which is a production assumption — the vendor's own
+      commitment lives on the purchase order, and that is the date this block should use. The routing carries only the linked
+      purchase-order ids, no vendor, no expected date and no received quantity, so switching to the PO expected date needs
+      <strong style="color:rgba(242,240,236,.85);font-weight:500">GET /api/materials/backlog</strong>.
+    </span>`;
+}
+
+// ---- customer delivery (live, from the job read) --------------------------------------
+
+function deliveryView() {
+  if (!Array.isArray(JOBS)) {
+    return `<div class="card" style="padding:13px 12px"><span class="note">The job list could not be read, so no delivery dates can be assessed.</span></div>`;
+  }
+  const rows = JOBS
+    .map((j) => ({ j, over: dayDiff(j.scheduledEndUtc) }))
+    .filter((x) => x.over != null && x.over >= -7)
+    .sort((a, b) => b.over - a.over);
+  const late = rows.filter((x) => x.over > 0);
+  const soon = rows.filter((x) => x.over <= 0);
+
+  const group = (list) => {
+    const by = {};
+    list.forEach((x) => { (by[x.j.customerName || 'No customer on job'] ||= []).push(x); });
+    return by;
+  };
+
+  const block = (title, list, ink) => {
+    if (!list.length) return '';
+    const by = group(list);
+    return `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <h2 style="color:${ink}">${title} · ${list.length}</h2>
+      ${Object.keys(by).sort((a, b) => by[b].length - by[a].length).map((c) => `
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <span class="mono" style="font-size:10px;font-weight:700;letter-spacing:.05em;color:rgba(242,240,236,.78)">${esc(c)} · ${by[c].length}</span>
+          <div class="rows">
+            ${by[c].map(({ j, over }) => `
+              <div class="card" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:11px 13px;border-left:3px solid ${over > 0 ? (over > 14 ? RED : AMBER) : BLUE}">
+                <div style="display:flex;flex-direction:column;gap:4px;min-width:0;flex:1">
+                  <span style="font:700 18px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(j.jobName)}</span>
+                  <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.6)">Job ${esc(j.systemJobNumber)}${j.quantityRemaining != null ? ' · ' + esc(j.quantityRemaining) + ' of ' + esc(j.quantity) + ' open' : ''}</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:2px;align-items:flex-end">
+                  <span class="mono" style="font-size:13px;font-weight:700;color:${over > 0 ? (over > 14 ? RED : AMBER) : BLUE}">${dateLabel(j.scheduledEndUtc)}</span>
+                  <span class="mono" style="font-size:9.5px;color:${over > 0 ? (over > 14 ? RED : AMBER) : 'rgba(242,240,236,.6)'}">${relLabel(j.scheduledEndUtc)}</span>
+                </div>
+              </div>`).join('')}
+          </div>
+        </div>`).join('')}
+    </div>`;
+  };
+
+  return `
+    ${rows.length ? '' : `<div class="card" style="padding:13px 12px"><span class="note">Nothing open is late or due inside seven days.</span></div>`}
+    ${block('Past scheduled finish', late, RED)}
+    ${block('Due within 7 days', soon, BLUE)}
+    <span class="note" style="max-width:74ch">
+      Dates are Fulcrum's <strong style="color:rgba(242,240,236,.85);font-weight:500">scheduledEndUtc</strong> on the job, which is a
+      production finish date, not a customer promise date — the jobs read carries no promise date and every job in the current set has an
+      empty production due date. Shipment dates and a true customer-facing OTD need the on-time route below.
+    </span>`;
+}
+
+// ---- render ---------------------------------------------------------------------------
+
+const gate = (u) => `
+  <div class="wrap" style="display:flex;flex-direction:column;gap:14px;max-width:560px;padding-top:12vh">
+    <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.09em;color:${AMBER}">IMPULSE PRECISION · PROJECT MANAGEMENT</span>
+    <h1 style="font-size:26px">${u ? 'Not your view' : 'Sign in first'}</h1>
+    <p class="mono" style="margin:0;font-size:12px;line-height:1.65;color:rgba(242,240,236,.7)">
+      ${u
+        ? esc(u.name) + ' is signed in as ' + esc(String(u.role)) + '. Material backlog, purchase orders and customer delivery are for supervisors, quality managers and administrators. What is on deck at your station is on the On deck page, open to everyone.'
+        : 'This page follows the operator app’s sign-in. Sign in on this device, then come back.'}
+    </p>
+    <a class="mono" href="./plan.html" style="font-size:11px;letter-spacing:.05em;text-decoration:none">On deck &rarr;</a>
+    <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
+  </div>`;
+
+function render() {
+  const u = sessionUser();
+  if (!mayView(u)) { el.innerHTML = gate(u); return; }
+
+  const inbound = ONTIME && ONTIME.inbound ? otd(ONTIME.inbound) : null;
+  const outbound = ONTIME && ONTIME.outbound ? otd(ONTIME.outbound) : null;
+  const lateMat = MATERIAL && Array.isArray(MATERIAL.late) ? MATERIAL.late.length : null;
+  const missingMat = MATERIAL && Array.isArray(MATERIAL.missing) ? MATERIAL.missing.length : null;
+  const lateDeliveries = Array.isArray(JOBS)
+    ? JOBS.filter((j) => { const n = dayDiff(j.scheduledEndUtc); return n != null && n > 0; }).length
+    : null;
+  // A count of zero is only honest when dates exist to judge. With no dated steps the
+  // answer is "not measurable", which reads as —, not 0.
+  const ospDated = SCHED.state === 'ready'
+    ? SCHED.ops.filter((o) => dayDiff(o.scheduledEndUtc) != null)
+    : null;
+  const ospLate = ospDated && ospDated.length
+    ? ospDated.filter((o) => dayDiff(o.scheduledEndUtc) > 0).length
+    : null;
+  const ospSub = SCHED.state !== 'ready'
+    ? 'load outside processing'
+    : !SCHED.ops.length
+      ? 'no open outside steps'
+      : ospDated.length
+        ? 'of ' + ospDated.length + ' dated steps'
+        : SCHED.ops.length + ' steps, no return dates';
+
+  el.innerHTML = `
+  <div class="bar">
+    <h1>Project management</h1>
+    <span class="mono" style="padding:4px 9px;border-radius:5px;background:rgba(143,180,255,.14);color:${BLUE};font-size:10px;font-weight:700;letter-spacing:.07em">BACKLOG REVIEW</span>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+      <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.6)">${esc(u.name)}</span>
+      <a class="mono" href="./index.html?stay=1&action=signout" style="display:flex;align-items:center;min-height:44px;padding:0 13px;border-radius:9px;text-decoration:none;
+        font-size:9.5px;font-weight:600;letter-spacing:.06em;background:rgba(255,255,255,.06);
+        border:1px solid rgba(255,255,255,.16);color:rgba(242,240,236,.72)">SIGN OUT</a>
+    </div>
+  </div>
+  <div class="navrow">
+    ${link('./board.html', 'Floor board')}
+    ${link('./reports.html', 'Reports · OLE + OEE')}
+    ${link('./plan.html', 'On deck')}
+    ${link('./plan.html#late', 'Late jobs')}
+    ${link('./index.html?stay=1&action=search', 'Search jobs')}
+  </div>
+
+  <div class="wrap" style="display:flex;flex-direction:column;gap:24px">
+    <div class="kpis">
+      ${kpi('ON-TIME INBOUND', pct(inbound), inbound == null ? 'needs /api/reports/on-time' : ONTIME.inbound.onTime + ' of ' + ONTIME.inbound.total + ' receipts', otdInk(inbound))}
+      ${kpi('ON-TIME OUTBOUND', pct(outbound), outbound == null ? 'needs /api/reports/on-time' : ONTIME.outbound.onTime + ' of ' + ONTIME.outbound.total + ' shipments', otdInk(outbound))}
+      ${kpi('LATE INBOUND MATERIAL', lateMat == null ? '—' : String(lateMat), lateMat == null ? 'needs /api/materials/backlog' : 'purchase-order lines past promise', lateMat ? RED : null)}
+      ${kpi('MISSING MATERIAL', missingMat == null ? '—' : String(missingMat), missingMat == null ? 'needs /api/materials/backlog' : 'open jobs with no PO line', missingMat ? RED : null)}
+      ${kpi('OSP PAST RETURN', ospLate == null ? '\u2014' : String(ospLate), ospSub, ospLate ? RED : null)}
+      ${kpi('JOBS PAST FINISH', lateDeliveries == null ? '—' : String(lateDeliveries), 'of ' + (Array.isArray(JOBS) ? JOBS.length : 0) + ' open jobs', lateDeliveries ? RED : null)}
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:11px">
+      <h2 class="sect"><span>1</span> · Material backlog</h2>
+      ${MATERIAL
+        ? `<span class="note">Material backlog data received — rendering is wired to the shape in REPORTS-API.md.</span>`
+        : awaiting('Inbound material and missing material', '/api/materials/backlog',
+            'Nothing in this server reaches purchase orders, material allocation or receipts today — fulcrumClient.js covers jobs, items, sales orders, customers, equipment, timers and routing only. This route carries the purchase-order expected date, which is the date both material and outside-processing status should be judged on, plus vendor, ordered against received quantity, and the open jobs with no purchase-order line at all.')}
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:11px">
+      <h2 class="sect"><span>2</span> · Outside processing</h2>
+      ${ospView()}
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:11px">
+      <h2 class="sect"><span>3</span> · Customer delivery · late and next 7 days</h2>
+      ${deliveryView()}
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:11px">
+      <h2 class="sect"><span>4</span> · On-time performance</h2>
+      ${ONTIME
+        ? `<span class="note">On-time data received — rendering is wired to the shape in REPORTS-API.md.</span>`
+        : awaiting('On-time shipment and delivery', '/api/reports/on-time',
+            'Inbound needs receipt date against promised date per purchase-order line. Outbound needs ship or completion date against scheduled finish — and the current job read returns only inProgress and scheduled jobs, so completed history is not reachable yet either.')}
+    </div>
+
+    <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
+  </div>`;
+}
+
+el.addEventListener('click', (e) => {
+  if (e.target.closest('[data-load]')) loadSchedule();
+});
+
+async function load() {
+  render();
+  if (!mayView(sessionUser())) return;
+  const [jobs, material, ontime] = await Promise.all([
+    api.searchJobs('').then((r) => r.items, () => null),
+    api.materialsBacklog(),
+    api.onTimeReport(),
+  ]);
+  JOBS = jobs;
+  MATERIAL = material || null;
+  ONTIME = ontime || null;
+  render();
+}
+
+load();
+</script>
+</body>
+</html>

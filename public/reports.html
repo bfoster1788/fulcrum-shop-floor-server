@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#131211">
+<title>Reports — Fulcrum Shop Floor</title>
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Barlow+Semi+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; min-height:100%; }
+  body{
+    background:#131211; color:#f2f0ec;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  .mono{ font-family:'JetBrains Mono',ui-monospace,monospace; }
+  h1{ margin:0; font:700 26px/1 'Barlow Semi Condensed',Helvetica,sans-serif; text-transform:uppercase; letter-spacing:.01em; }
+  h2{ margin:0; font:600 10px/1 'JetBrains Mono',monospace; letter-spacing:.11em; color:rgba(242,240,236,.66); text-transform:uppercase; }
+  a{ color:#f5a524; }
+  a:hover{ color:#ffc35c; }
+  button{ font-family:inherit; color:inherit; cursor:pointer; border:none; background:none; }
+  .wrap{ max-width:1500px; margin:0 auto; padding:18px clamp(14px,2.5vw,26px) 40px; }
+  .bar{ display:flex; flex-wrap:wrap; align-items:center; gap:12px 22px;
+        padding:16px clamp(14px,2.5vw,26px); background:#1b1a18;
+        border-bottom:1px solid rgba(255,255,255,.08); }
+  .navrow{ display:flex; flex-wrap:wrap; gap:8px; padding:11px clamp(14px,2.5vw,26px);
+           background:#1b1a18; border-bottom:1px solid rgba(255,255,255,.08); }
+  .card{ background:#1b1a18; border:1px solid rgba(255,255,255,.08); border-radius:11px; }
+  .note{ font:400 10.5px/1.55 'JetBrains Mono',monospace; color:rgba(242,240,236,.62); }
+  .factors{ display:grid; gap:9px; grid-template-columns:repeat(auto-fit,minmax(min(100%,132px),1fr)); }
+  .rows{ display:flex; flex-direction:column; gap:9px; }
+  .track{ display:flex; height:6px; border-radius:3px; overflow:hidden; background:rgba(255,255,255,.07); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { api, isMock } from './api.js';
+
+const GREEN = '#2ed47a', AMBER = '#f5a524', RED = '#ff8a7d', BLUE = '#8fb4ff';
+const el = document.getElementById('app');
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+// Same session and same role list as index.html and board.html — a visibility gate, not
+// security. Keep the three in step.
+const STORE = 'shopfloor.state.v1';
+const BOARD_ROLES = ['administrator', 'production supervisor', 'quality manager', 'quality supervisor'];
+const sessionUser = () => {
+  try { return (JSON.parse(localStorage.getItem(STORE) || 'null') || {}).user || null; } catch (e) { return null; }
+};
+const mayView = (u) => !!u && BOARD_ROLES.indexOf(String(u.role || '').trim().toLowerCase()) > -1;
+
+let TAB = location.hash === '#equipment' ? 'equipment' : 'people';
+let DATA = { people: undefined, equipment: undefined };   // undefined = not read yet, null = read failed
+
+const hrs = (sec) => (sec == null ? null : sec / 3600);
+const h1 = (sec) => (sec == null ? '—' : (Math.round((sec / 3600) * 10) / 10) + 'h');
+const pct = (n) => (n == null ? '—' : Math.round(n * 100) + '%');
+const inkFor = (n) => (n == null ? 'rgba(242,240,236,.5)' : n >= 0.7 ? GREEN : n >= 0.4 ? AMBER : RED);
+
+// A factor is null when its inputs are missing, and null propagates: an OEE with a
+// guessed quality factor is worse than an OEE that says it cannot be computed yet.
+const ratio = (num, den) => (num == null || !den ? null : num / den);
+const product = (list) => (list.some((v) => v == null) ? null : list.reduce((a, v) => a * v, 1));
+
+function factors(r, availableSeconds) {
+  const busy = (r.runSeconds || 0) + (r.setupSeconds || 0);
+  const availability = ratio(busy, availableSeconds);
+  const performance = ratio(r.standardSeconds, r.runSeconds);
+  const made = (r.goodQty || 0) + (r.scrapQty || 0);
+  const quality = r.goodQty == null || !made ? null : r.goodQty / made;
+  return { availability, performance, quality, score: product([availability, performance, quality]) };
+}
+
+const gate = (u) => `
+  <div class="wrap" style="display:flex;flex-direction:column;gap:14px;max-width:560px;padding-top:12vh">
+    <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.09em;color:${AMBER}">IMPULSE PRECISION · REPORTS</span>
+    <h1>${u ? 'Not your view' : 'Sign in first'}</h1>
+    <p class="mono" style="margin:0;font-size:12px;line-height:1.65;color:rgba(242,240,236,.7)">
+      ${u
+        ? esc(u.name) + ' is signed in as ' + esc(String(u.role)) + '. Productivity and utilization reports are for supervisors, quality managers and administrators.'
+        : 'Reports follow the operator app’s sign-in. Sign in on this device, then come back.'}
+    </p>
+    <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
+  </div>`;
+
+const link = (href, label, on) => `
+  <a class="mono" href="${href}" style="display:flex;align-items:center;min-height:44px;padding:0 14px;border-radius:9px;text-decoration:none;
+    font-size:10.5px;font-weight:600;letter-spacing:.05em;
+    background:${on ? 'rgba(245,165,36,.13)' : 'rgba(255,255,255,.05)'};
+    border:1px solid ${on ? 'rgba(245,165,36,.4)' : 'rgba(255,255,255,.14)'};
+    color:${on ? AMBER : 'rgba(242,240,236,.82)'}">${label}</a>`;
+
+const tab = (id, label) => `
+  <button data-tab="${id}" style="min-height:44px;padding:0 15px;border-radius:9px;
+    font:600 10.5px/1 'JetBrains Mono',monospace;letter-spacing:.05em;
+    background:${TAB === id ? 'rgba(143,180,255,.13)' : 'rgba(255,255,255,.05)'};
+    border:1px solid ${TAB === id ? 'rgba(143,180,255,.42)' : 'rgba(255,255,255,.14)'};
+    color:${TAB === id ? BLUE : 'rgba(242,240,236,.82)'}">${label}</button>`;
+
+const factorCard = (label, value, sub) => `
+  <div style="display:flex;flex-direction:column;gap:5px;padding:10px 11px;border-radius:9px;background:#131211;border:1px solid rgba(255,255,255,.1)">
+    <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.07em;color:rgba(242,240,236,.62)">${label}</span>
+    <span class="mono" style="font-size:20px;font-weight:700;line-height:1;color:${inkFor(value)}">${pct(value)}</span>
+    <span class="mono" style="font-size:8.5px;color:rgba(242,240,236,.5)">${sub}</span>
+  </div>`;
+
+// Every factor names the reason it cannot be computed, so a blank column is a data
+// question rather than a mystery.
+const missing = (f, r) => {
+  const out = [];
+  if (f.availability == null) out.push('no time booked');
+  if (f.performance == null) out.push(r.standardSeconds == null ? 'no routing standard' : 'no run time');
+  if (f.quality == null) out.push('no good/scrap count');
+  return out;
+};
+
+function reportRow(r, availableSeconds, meta) {
+  const f = factors(r, availableSeconds);
+  const gaps = missing(f, r);
+  const busy = (r.runSeconds || 0) + (r.setupSeconds || 0);
+  const w = (sec) => (availableSeconds ? Math.min(100, (sec / availableSeconds) * 100) + '%' : '0%');
+  return `
+  <div class="card" style="padding:12px 13px;display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px">
+      <span class="mono" style="font-size:12.5px;font-weight:700">${esc(r.name)}</span>
+      <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.6)">${esc(meta)}</span>
+      <span class="mono" style="margin-left:auto;font-size:18px;font-weight:700;color:${inkFor(f.score)}">${pct(f.score)}</span>
+    </div>
+    <div class="track">
+      <div style="width:${w(r.runSeconds || 0)};background:${GREEN}"></div>
+      <div style="width:${w(r.setupSeconds || 0)};background:${AMBER}"></div>
+    </div>
+    <div class="factors">
+      ${factorCard('AVAILABILITY', f.availability, h1(busy) + ' of ' + h1(availableSeconds))}
+      ${factorCard('PERFORMANCE', f.performance, h1(r.standardSeconds) + ' std / ' + h1(r.runSeconds) + ' run')}
+      ${factorCard('QUALITY', f.quality, (r.goodQty == null ? '—' : r.goodQty + ' good · ' + (r.scrapQty || 0) + ' scrap'))}
+    </div>
+    ${gaps.length ? `<span class="mono" style="font-size:9.5px;color:${AMBER}">Not scored: ${gaps.join(' · ')}</span>` : ''}
+  </div>`;
+}
+
+const awaiting = (what, route) => `
+  <div style="padding:20px 16px;border:1px dashed rgba(245,165,36,.45);border-radius:11px;display:flex;flex-direction:column;gap:9px">
+    <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.07em;color:${AMBER}">AWAITING DATA</span>
+    <span class="mono" style="font-size:11px;line-height:1.6;color:rgba(242,240,236,.72)">
+      ${what} needs <strong style="font-weight:500">GET ${route}</strong>, which this server does not expose yet.
+      The dashboard read only reports timers that are running at this instant, so nothing today can answer what happened
+      over a shift. The view below is the finished layout — it fills in as soon as that route returns.
+    </span>
+    <span class="mono" style="font-size:10px;line-height:1.6;color:rgba(242,240,236,.55)">
+      Response shape and the factor definitions behind these numbers are written up in REPORTS-API.md.
+    </span>
+  </div>`;
+
+function peopleView() {
+  const d = DATA.people;
+  if (d === undefined) return `<span class="note">Loading…</span>`;
+  const ops = d && Array.isArray(d.operators) ? d.operators.slice() : [];
+  const avail = (d && d.shiftSeconds) || 7 * 3600;
+  // Named, unranked: alphabetical. Sorting by score would make this a leaderboard, which
+  // is a different tool with different consequences.
+  ops.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  // d === null means the read did not happen. "No time booked today" is a MEASUREMENT,
+  // so it may only be shown when something was actually measured — otherwise the page
+  // would assert an idle shop it knows nothing about.
+  if (!d) return awaiting('Operator productivity (OLE)', '/api/reports/labor?date=YYYY-MM-DD') + oleDefs(avail);
+  return `
+    <div style="display:flex;flex-direction:column;gap:11px">
+      <h2>Labor effectiveness · today${ops.length ? ' · ' + ops.length + ' operators' : ''}</h2>
+      ${ops.length
+        ? `<div class="rows">${ops.map((o) => reportRow(o, avail, String(o.role || '') + (o.jobs ? ' · ' + o.jobs + ' jobs' : ''))).join('')}</div>`
+        : `<div class="card" style="padding:13px 12px"><span class="note">No operator time booked today.</span></div>`}
+    </div>
+    ${oleDefs(avail)}`;
+}
+
+// The definitions stand on their own — they are worth reading before any data exists, so
+// they render in the awaiting state too.
+const oleDefs = (avail) => `
+    <div class="card" style="padding:12px 13px;display:flex;flex-direction:column;gap:6px">
+      <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.07em;color:${AMBER}">HOW OLE IS COUNTED</span>
+      <span class="note" style="max-width:74ch">
+        <strong style="color:rgba(242,240,236,.85);font-weight:500">Availability</strong> is booked time (run plus setup) over the
+        scheduled shift length, ${Math.round(avail / 3600)} hours, whether or not the person clocked in for all of it.
+        <strong style="color:rgba(242,240,236,.85);font-weight:500">Performance</strong> is the routing's estimated machine time for
+        what they finished, over the run time they actually took.
+        <strong style="color:rgba(242,240,236,.85);font-weight:500">Quality</strong> is good pieces over good plus scrap, from the
+        count entered when a step is closed. OLE is the three multiplied — so 90% on each is 73% overall, which is normal.
+        Names are listed alphabetically and never ranked.
+      </span>
+    </div>`;
+}
+
+function equipmentView() {
+  const d = DATA.equipment;
+  if (d === undefined) return `<span class="note">Loading…</span>`;
+  const ms = d && Array.isArray(d.machines) ? d.machines.slice() : [];
+  const avail = (d && d.calendarSeconds) || null;
+  ms.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  if (!d) return awaiting('Equipment OEE', '/api/reports/equipment?date=YYYY-MM-DD') + oeeDefs();
+  const cnc = ms.filter((m) => m.isCnc);
+  return `
+    <div style="display:flex;flex-direction:column;gap:11px">
+      <h2>Equipment effectiveness · today${cnc.length ? ' · ' + cnc.length + ' CNC' : ''}</h2>
+      ${ms.length
+        ? `<div class="rows">${ms.map((m) => reportRow(m, avail, String(m.description || ''))).join('')}</div>`
+        : `<div class="card" style="padding:13px 12px"><span class="note">No machine time booked today.</span></div>`}
+    </div>
+    ${oeeDefs()}`;
+}
+
+const oeeDefs = () => `
+    <div class="card" style="padding:12px 13px;display:flex;flex-direction:column;gap:6px">
+      <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.07em;color:${AMBER}">HOW OEE IS COUNTED</span>
+      <span class="note" style="max-width:74ch">
+        <strong style="color:rgba(242,240,236,.85);font-weight:500">Availability</strong> is booked time over
+        <strong style="color:rgba(242,240,236,.85);font-weight:500">calendar</strong> hours, not staffed hours — the capital
+        utilization view: a machine idle overnight is unused capital whether or not anyone was rostered.
+        That makes these numbers deliberately lower than the floor board's shift-based utilization, which divides by
+        7 staffed hours. Both are correct; they answer different questions.
+        <strong style="color:rgba(242,240,236,.85);font-weight:500">Performance</strong> is routing estimated machine time over
+        actual run time. <strong style="color:rgba(242,240,236,.85);font-weight:500">Quality</strong> is good over good plus scrap.
+      </span>
+    </div>`;
+}
+
+function render() {
+  const u = sessionUser();
+  if (!mayView(u)) { el.innerHTML = gate(u); return; }
+  el.innerHTML = `
+  <div class="bar">
+    <h1>Reports</h1>
+    <span class="mono" style="padding:4px 9px;border-radius:5px;background:rgba(143,180,255,.14);color:${BLUE};font-size:10px;font-weight:700;letter-spacing:.07em">TODAY</span>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      ${tab('people', 'PEOPLE · OLE')}
+      ${tab('equipment', 'EQUIPMENT · OEE')}
+      <a class="mono" href="./index.html?stay=1&action=signout" style="display:flex;align-items:center;min-height:44px;padding:0 14px;border-radius:9px;text-decoration:none;
+        font-size:9.5px;font-weight:600;letter-spacing:.06em;background:rgba(255,255,255,.06);
+        border:1px solid rgba(255,255,255,.16);color:rgba(242,240,236,.72)">SIGN OUT</a>
+    </div>
+  </div>
+  <div class="navrow">
+    ${link('./board.html', 'Floor board')}
+    ${link('./pm.html', 'Project management')}
+    ${link('./plan.html', 'What\u2019s on deck')}
+    ${link('./plan.html#late', 'Late jobs')}
+    ${link('./index.html?stay=1&action=scan', 'Scan a traveler')}
+    ${link('./index.html?stay=1&action=search', 'Search jobs')}
+    ${link('./index.html?stay=1&action=runs', 'My runs')}
+  </div>
+  <div class="wrap" style="display:flex;flex-direction:column;gap:20px">
+    ${TAB === 'people' ? peopleView() : equipmentView()}
+    <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
+  </div>`;
+}
+
+el.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-tab]');
+  if (!b) return;
+  TAB = b.dataset.tab;
+  location.hash = '#' + TAB;
+  render();
+});
+
+async function load() {
+  if (!mayView(sessionUser())) { render(); return; }
+  const date = new Date();
+  const iso = date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+  const [people, equipment] = await Promise.all([api.laborReport(iso), api.equipmentReport(iso)]);
+  DATA = { people: people || null, equipment: equipment || null };
+  render();
+}
+
+render();
+load();
+setInterval(load, 60000);
+if (isMock) console.info('Reports running on mock data.');
+</script>
+</body>
+</html>

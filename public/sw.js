@@ -7,11 +7,14 @@
 // API calls are network-only and never cached — stale job data on a shop floor is worse
 // than no data. Writes that fail offline are queued in IndexedDB by the app, not here.
 
-const VERSION = 'shopfloor-v3';
+const VERSION = 'shopfloor-v6';
 const SHELL = [
   './',
   './index.html',
   './board.html',
+  './reports.html',
+  './plan.html',
+  './pm.html',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
