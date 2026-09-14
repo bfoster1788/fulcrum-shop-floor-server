@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#131211">
+<title>Floor board — Fulcrum</title>
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Barlow+Semi+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; min-height:100%; }
+  body{
+    background:#131211; color:#f2f0ec;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  .mono{ font-family:'JetBrains Mono',ui-monospace,monospace; }
+  h1{ margin:0; font:700 26px/1 'Barlow Semi Condensed',Helvetica,sans-serif; text-transform:uppercase; letter-spacing:.01em; }
+  h2{ margin:0; font:600 10px/1 'JetBrains Mono',monospace; letter-spacing:.11em; color:rgba(242,240,236,.66); text-transform:uppercase; }
+  a{ color:#f5a524; }
+  a:hover{ color:#ffc35c; }
+  button{ font-family:inherit; color:inherit; cursor:pointer; border:none; background:none; }
+  .wrap{ max-width:1500px; margin:0 auto; padding:18px clamp(14px,2.5vw,26px) 32px; }
+  .bar{ display:flex; flex-wrap:wrap; align-items:center; gap:14px 26px;
+        padding:16px clamp(14px,2.5vw,26px); background:#1b1a18;
+        border-bottom:1px solid rgba(255,255,255,.08); }
+  .kpi{ display:flex; flex-direction:column; gap:5px; }
+  .kpi span:first-child{ font:500 9px/1 'JetBrains Mono',monospace; letter-spacing:.09em; color:rgba(242,240,236,.68); }
+  .kpi span:last-child{ font:500 22px/1 'JetBrains Mono',monospace; }
+  .grid{ display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr)); }
+  .card{ background:#1b1a18; border:1px solid rgba(255,255,255,.08); border-radius:11px; overflow:hidden; }
+  .cols{ display:grid; gap:22px; grid-template-columns:minmax(0,1fr); }
+  @media (min-width:1100px){ .cols{ grid-template-columns:minmax(0,1fr) 330px; } }
+  .dot{ width:8px; height:8px; border-radius:4px; flex:none; }
+  @keyframes pulse{ 0%,100%{opacity:1} 50%{opacity:.3} }
+  .live{ animation:pulse 1.7s ease-in-out infinite; }
+  .track{ display:flex; height:16px; border-radius:4px; overflow:hidden; background:rgba(255,255,255,.06); }
+  .support{ display:grid; gap:9px; grid-template-columns:repeat(auto-fill,minmax(min(100%,150px),1fr)); }
+  .note{ font:400 11px/1.55 'JetBrains Mono',monospace; color:rgba(242,240,236,.66); }
+</style>
+</head>
+<body>
+<div id="board"></div>
+
+<script type="module">
+import { api } from './api.js';
+
+const GREEN = '#2ed47a', AMBER = '#f5a524', RED = '#ff8a7d', BLUE = '#8fb4ff', DIM = 'rgba(242,240,236,.66)';
+const el = document.getElementById('board');
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+const clock = (sec) => {
+  const h = Math.floor(sec/3600), m = Math.floor(sec%3600/60);
+  return h + ':' + String(m).padStart(2,'0');
+};
+const hhmm = (sec) => {
+  const h = Math.floor(sec/3600), m = Math.floor(sec%3600/60), s = Math.floor(sec%60);
+  return h + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+};
+
+let F = null;
+
+// The board reads the SAME session the operator app writes, so who you are signed in as
+// on this device decides whether the board opens. Same role list as index.html — keep
+// the two in step. This is a visibility gate, not security: the numbers still come from
+// our server, so a real restriction belongs there.
+const STORE = 'shopfloor.state.v1';
+const BOARD_ROLES = ['administrator', 'production supervisor', 'quality manager', 'quality supervisor'];
+
+function sessionUser() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
+    return (saved && saved.user) || null;
+  } catch (e) { return null; }
+}
+
+const mayView = (u) => !!u && BOARD_ROLES.indexOf(String(u.role || '').trim().toLowerCase()) > -1;
+
+function gateView(u) {
+  const signedIn = !!u;
+  return `
+  <div class="wrap" style="display:flex;flex-direction:column;gap:14px;max-width:560px;padding-top:12vh">
+    <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.09em;color:${AMBER}">IMPULSE PRECISION \u00b7 FLOOR BOARD</span>
+    <h1>${signedIn ? 'Not your view' : 'Sign in first'}</h1>
+    <p class="mono" style="margin:0;font-size:12px;line-height:1.65;color:rgba(242,240,236,.7)">
+      ${signedIn
+        ? esc(u.name) + ' is signed in as ' + esc(String(u.role)) + '. The floor board is for supervisors, quality managers and administrators. Your runs, times and pauses are all in the operator app.'
+        : 'The floor board follows the operator app\u2019s sign-in. Sign in on this device, then come back.'}
+    </p>
+    <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
+  </div>`;
+}
+
+const INK = { running: GREEN, down: RED, idle: DIM };
+const LABEL = { running: 'RUNNING', down: 'DOWN', idle: 'IDLE' };
+
+// Two numbers, both over the same 7 scheduled hours per weekday, both from the server so
+// the board can never disagree with it:
+//   utilizationPctShift        (cutting + setup) / 7  — general equipment utilization
+//   spindleUtilizationPctShift  cutting / 7           — CNC only, run time alone
+// Never clamped: lights-out overnight and weekend work legitimately exceeds 100%.
+const utilPct = (m) => (m.utilizationPctShift != null ? m.utilizationPctShift : 0);
+const spindlePct = (m) => (m.spindleUtilizationPctShift != null ? m.spindleUtilizationPctShift : 0);
+const show = (n) => (n >= 100 ? Math.round(n) : Math.round(n * 10) / 10);
+const inkFor = (n) => (n >= 70 ? GREEN : n >= 40 ? AMBER : RED);
+
+// The dashboard payload carries no server timestamp, so this is when THIS page last
+// read it — labelled "read at" rather than "as of" so a board left up on a wall is not
+// read as a claim about the server. A missing or unparseable value shows a dash: an
+// "Invalid Date" in 22px type is worse than no number.
+function asOfLabel(v) {
+  const d = v ? new Date(v) : null;
+  if (!d || isNaN(d.getTime())) return '\u2014';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function machineCard(m) {
+  const ink = INK[m.state];
+  const util = utilPct(m), spindle = spindlePct(m);
+  // Bars scale to the booked total once it passes the scheduled day, so an over-100%
+  // machine still reads as proportions rather than three clipped segments.
+  const booked = m.cuttingHours + m.setupHours + m.downHours;
+  const denom = Math.max(m.shiftHours || 1, booked);
+  const w = (h) => (h / denom) * 100 + '%';
+  const r = m.run;
+  const elapsed = r ? (r.heldSeconds != null ? r.heldSeconds : (Date.now() - new Date(r.startedOnUtc)) / 1000) : 0;
+  const done = r && r.quantity != null ? r.quantity - r.quantityRemaining : null;
+
+  return `
+  <div class="card" style="border-left:3px solid ${ink}">
+    <div style="padding:13px 14px;display:flex;flex-direction:column;gap:11px">
+      <div style="display:flex;align-items:center;gap:9px">
+        <span class="dot ${m.state === 'running' ? 'live' : ''}" style="background:${ink}"></span>
+        <span class="mono" style="font-size:15px;font-weight:700;letter-spacing:.02em">${esc(m.equipmentId)}</span>
+        ${r && r.unattended ? `<span class="mono" style="padding:2px 5px;border-radius:3px;background:rgba(143,180,255,.16);color:${BLUE};font-size:8px;font-weight:700;letter-spacing:.06em">UNATTENDED</span>` : ''}
+        <span class="mono" style="margin-left:auto;font-size:9.5px;font-weight:600;letter-spacing:.06em;color:${ink}">${LABEL[m.state]}${m.state === 'down' && r && r.pauseReason ? ' · ' + esc(r.pauseReason.toUpperCase()) : ''}</span>
+      </div>
+      <div class="mono" style="font-size:10px;color:rgba(242,240,236,.66);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.model)}</div>
+
+      ${r ? `
+        <div style="display:flex;flex-direction:column;gap:5px;padding:11px 12px;border-radius:9px;background:#131211">
+          <div style="display:flex;align-items:flex-start;gap:8px">
+            <span style="flex:1;min-width:0;font:700 17px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(r.jobName || ('Job ' + r.jobId))}</span>
+            <span class="mono" style="flex:none;font-size:19px;color:${ink}">${hhmm(elapsed)}</span>
+          </div>
+          <div class="mono" style="font-size:10px;color:rgba(242,240,236,.7);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Job ${esc(r.jobId)} · ${esc(r.operationName)} · ${esc(r.operatorName)}${done != null ? ' · ' + done + '/' + r.quantity + ' pcs' : ''}</div>
+        </div>`
+      : `
+        <div class="mono" style="padding:11px 12px;border-radius:9px;background:#131211;font-size:11px;color:rgba(242,240,236,.66)">
+          No job loaded${m.lightsOut ? ' · lights-out capable' : ''}
+        </div>`}
+
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div class="track">
+          <div style="width:${w(m.cuttingHours)};background:${GREEN}"></div>
+          <div style="width:${w(m.setupHours)};background:${AMBER}"></div>
+          <div style="width:${w(m.downHours)};background:#e2493b"></div>
+        </div>
+        <div class="mono" style="display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;font-size:9.5px;color:rgba(242,240,236,.68)">
+          <span style="color:${GREEN}">CUT ${m.cuttingHours.toFixed(1)}</span>
+          <span style="color:${AMBER}">SETUP ${m.setupHours.toFixed(1)}</span>
+          ${m.downHours ? `<span style="color:${RED}">DOWN ${m.downHours.toFixed(1)}</span>` : ''}
+          <span style="margin-left:auto">OF ${m.shiftHours} SCHED</span>
+        </div>
+        <div style="display:flex;gap:9px;padding-top:2px">
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:8px;background:#131211">
+            <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.07em;color:rgba(242,240,236,.62)">UTILIZATION</span>
+            <span class="mono" style="font-size:19px;font-weight:700;line-height:1;color:${inkFor(util)}">${show(util)}%</span>
+            <span class="mono" style="font-size:8.5px;color:rgba(242,240,236,.55)">cut + setup</span>
+          </div>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:8px;background:#131211;border:1px solid rgba(46,212,122,.22)">
+            <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.07em;color:rgba(242,240,236,.62)">SPINDLE</span>
+            <span class="mono" style="font-size:19px;font-weight:700;line-height:1;color:${inkFor(spindle)}">${show(spindle)}%</span>
+            <span class="mono" style="font-size:8.5px;color:rgba(242,240,236,.55)">cutting only</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function staffRow(o) {
+  const state = o.running ? 'running' : o.paused ? 'down' : 'idle';
+  const ink = INK[state];
+  const detail = o.runs.length
+    ? o.runs.map((r) => 'Job ' + r.jobId + ' · ' + (r.equipmentId || r.operationName) + (r.isPaused ? ' (paused' + (r.pauseReason ? ': ' + r.pauseReason.toLowerCase() : '') + ')' : '')).join('<br>')
+    : 'No open runs';
+  return `
+  <div class="card" style="padding:12px 13px;display:flex;flex-direction:column;gap:7px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="dot" style="background:${ink}"></span>
+      <span class="mono" style="font-size:11.5px;font-weight:700">${esc(o.name)}</span>
+      <span class="mono" style="margin-left:auto;font-size:9px;font-weight:600;letter-spacing:.05em;color:${ink}">${o.running ? o.running + ' RUNNING' : o.paused ? o.paused + ' PAUSED' : 'NO RUNS'}</span>
+    </div>
+    <div class="mono" style="font-size:10px;line-height:1.5;color:rgba(242,240,236,.7)">${detail}</div>
+    <div class="mono" style="font-size:9px;letter-spacing:.05em;color:rgba(242,240,236,.62)">${esc(o.role)} · ${esc(o.shift)} shift</div>
+  </div>`;
+}
+
+function alerts() {
+  const out = [];
+  F.machines.filter((m) => m.state === 'down').forEach((m) => {
+    out.push({ kind: 'bad', tag: m.equipmentId + ' DOWN', text: (m.run && m.run.pauseReason ? m.run.pauseReason + ' on ' : '') + 'Job ' + (m.run ? m.run.jobId : '') + '. Cutting stopped.' });
+  });
+
+  const stepPaused = F.support.filter((c) => c.state === 'down');
+  stepPaused.forEach((c) => {
+    out.push({ kind: 'warn', tag: c.equipmentId + ' PAUSED', text: 'Job ' + c.run.jobId + ' · ' + c.run.operationName + ' held by ' + c.run.operatorName + '.' });
+  });
+
+  // Idle machines roll into one line. Seven near-identical cards buried the one real
+  // signal, and "which spindles are free" reads better as a list than as a stack.
+  const idle = F.machines.filter((m) => m.state === 'idle');
+  if (idle.length) {
+    const lo = idle.filter((m) => m.lightsOut);
+    out.push({
+      kind: 'warn',
+      tag: idle.length + ' IDLE · ' + idle.map((m) => m.equipmentId).join(', '),
+      // The roster is already in the tag. Repeating it here as the lights-out subset
+      // read as two lists disagreeing, so say the count instead of naming them twice.
+      text: lo.length === idle.length
+        ? 'All of them can run lights-out.'
+        : lo.length
+          ? lo.length + ' of the ' + idle.length + ' can run lights-out.'
+          : 'None of them can run lights-out.',
+    });
+  }
+
+  return out.length ? out : [{ kind: 'ok', tag: 'ALL RUNNING', text: 'Every machine has a job and nothing is down.' }];
+}
+
+function render() {
+  // Re-read the session on every paint: the board is often left up on a wall, and a
+  // sign-out in the operator app has to close it without a reload.
+  const u = sessionUser();
+  if (!mayView(u)) { el.innerHTML = gateView(u); return; }
+  if (!F) {
+    el.innerHTML = `<div class="wrap mono" style="color:rgba(242,240,236,.68)">Loading floor…</div>`;
+    return;
+  }
+  const cnc = F.machines;
+  const running = cnc.filter((m) => m.state === 'running');
+  const down = cnc.filter((m) => m.state === 'down');
+  const unattended = running.filter((m) => m.run && m.run.unattended);
+  const shopCut = cnc.reduce((a, m) => a + m.cuttingHours, 0);
+  const shopSetup = cnc.reduce((a, m) => a + m.setupHours, 0);
+  const shopAvail = cnc.reduce((a, m) => a + (m.shiftHours || 0), 0);
+  const shopSpindle = shopAvail ? (shopCut / shopAvail) * 100 : 0;
+  const shopUtil = shopAvail ? ((shopCut + shopSetup) / shopAvail) * 100 : 0;
+  const onShift = F.operators.filter((o) => o.runs.length).length;
+
+  const kpi = (label, value, ink) =>
+    `<div class="kpi"><span>${label}</span><span style="${ink ? 'color:' + ink : ''}">${value}</span></div>`;
+
+  // The board is a landing view for supervisors, so it has to be a way INTO the operator
+  // app, not a dead end — ?stay=1 stops the launch rule bouncing them straight back here.
+  const opLink = (href, label, primary) =>
+    `<a class="mono" href="./${href}" style="display:flex;align-items:center;min-height:44px;padding:0 14px;border-radius:9px;text-decoration:none;
+      font-size:10.5px;font-weight:600;letter-spacing:.05em;
+      background:${primary ? 'rgba(245,165,36,.13)' : 'rgba(255,255,255,.05)'};
+      border:1px solid ${primary ? 'rgba(245,165,36,.4)' : 'rgba(255,255,255,.14)'};
+      color:${primary ? AMBER : 'rgba(242,240,236,.82)'}">${label}</a>`;
+
+  el.innerHTML = `
+  <div class="bar">
+    <h1>Floor board</h1>
+    <span class="mono" style="padding:4px 9px;border-radius:5px;background:rgba(46,212,122,.14);color:${GREEN};font-size:10px;font-weight:700;letter-spacing:.07em">LIVE</span>
+    <div style="margin-left:auto;display:flex;flex-wrap:wrap;align-items:center;gap:14px 26px">
+      ${kpi('CNC UTIL · CUT+SETUP', show(shopUtil) + '%', inkFor(shopUtil))}
+      ${kpi('SPINDLE UTIL · CUT ONLY', show(shopSpindle) + '%', inkFor(shopSpindle))}
+      ${kpi('CUTTING NOW', running.length + ' / ' + cnc.length, running.length ? GREEN : RED)}
+      ${kpi('UNATTENDED', String(unattended.length), unattended.length ? BLUE : null)}
+      ${kpi('DOWN', String(down.length), down.length ? RED : null)}
+      ${kpi('OPERATORS ON JOBS', String(onShift), null)}
+      ${kpi('READ AT', asOfLabel(F.asOfUtc), null)}
+      <a class="mono" href="./index.html?stay=1&action=signout" style="display:flex;align-items:center;min-height:44px;padding:0 14px;border-radius:9px;text-decoration:none;
+        font-size:9.5px;font-weight:600;letter-spacing:.06em;background:rgba(255,255,255,.06);
+        border:1px solid rgba(255,255,255,.16);color:rgba(242,240,236,.72)">SIGN OUT</a>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-wrap:wrap;gap:8px;padding:11px clamp(14px,2.5vw,26px);background:#1b1a18;border-bottom:1px solid rgba(255,255,255,.08)">
+    ${opLink('reports.html', 'Reports · OLE + OEE', true)}
+    ${opLink('pm.html', 'Project management')}
+    ${opLink('plan.html', 'What\u2019s on deck')}
+    ${opLink('plan.html#late', 'Late jobs')}
+    ${opLink('index.html?stay=1&action=scan', 'Scan a traveler')}
+    ${opLink('index.html?stay=1&action=search', 'Search jobs')}
+    ${opLink('index.html?stay=1&action=runs', 'My runs')}
+    ${opLink('index.html?stay=1&action=held', 'Held writes')}
+  </div>
+
+  <div class="wrap cols">
+    <div style="display:flex;flex-direction:column;gap:22px;min-width:0">
+      <div style="display:flex;flex-direction:column;gap:11px">
+        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">
+          <h2>CNC machining · ${cnc.length} machines</h2>
+          <div class="mono" style="margin-left:auto;display:flex;gap:14px;font-size:9px;color:rgba(242,240,236,.66)">
+            <span style="color:${GREEN}">&#9632; CUTTING</span><span style="color:${AMBER}">&#9632; SETUP</span><span style="color:${RED}">&#9632; DOWN</span><span>&#9632; IDLE</span>
+          </div>
+        </div>
+        <div class="grid">${cnc.map(machineCard).join('')}</div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:11px">
+        <h2>Support work centers · step-level time only</h2>
+        <div class="support">
+          ${F.support.map((c) => {
+            const ink = INK[c.state];
+            return `
+            <div class="card" style="padding:11px 12px;display:flex;flex-direction:column;gap:6px">
+              <div style="display:flex;align-items:center;gap:7px">
+                <span class="dot" style="background:${ink}"></span>
+                <span class="mono" style="font-size:11px;font-weight:700">${esc(c.equipmentId)}</span>
+                <span class="mono" style="margin-left:auto;font-size:8.5px;font-weight:600;letter-spacing:.05em;color:${ink}">${LABEL[c.state]}</span>
+              </div>
+              <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.68);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.workCenterName)}</span>
+              <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.run ? esc(c.run.jobName || ('Job ' + c.run.jobId)) + ' · ' + esc(c.run.operatorName) : '&mdash;'}</span>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+
+      <p class="note" style="margin:0;max-width:70ch">
+        Both numbers divide by ${F.shiftHours} scheduled hours per machine per weekday.
+        <strong style="color:rgba(242,240,236,.85);font-weight:500">Utilization</strong> counts cutting plus setup — setup is productive work.
+        <strong style="color:rgba(242,240,236,.85);font-weight:500">Spindle</strong> counts cutting alone, which is the narrower question of what the
+        capital equipment is earning. Downtime is excluded from both. Neither is capped:
+        lights-out overnight and weekend running can exceed 100% of a scheduled weekday.
+      </p>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:22px;min-width:0">
+      <div style="display:flex;flex-direction:column;gap:11px">
+        <h2>Needs attention</h2>
+        ${alerts().map((a) => {
+          const ink = a.kind === 'bad' ? RED : a.kind === 'warn' ? AMBER : GREEN;
+          const bg = a.kind === 'bad' ? 'rgba(226,73,59,.11)' : a.kind === 'warn' ? 'rgba(245,165,36,.1)' : 'rgba(46,212,122,.1)';
+          return `
+          <div style="padding:11px 12px;border-radius:9px;background:${bg};border:1px solid ${ink}55;display:flex;flex-direction:column;gap:5px">
+            <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.06em;color:${ink}">${esc(a.tag)}</span>
+            <span class="mono" style="font-size:10.5px;line-height:1.45;color:rgba(242,240,236,.72)">${esc(a.text)}</span>
+          </div>`;
+        }).join('')}
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:11px">
+        <h2>Staffing</h2>
+        ${F.operators.length
+          ? F.operators.map(staffRow).join('')
+          : `<div class="mono" style="padding:13px 12px;border-radius:9px;border:1px dashed rgba(255,255,255,.14);font-size:10.5px;line-height:1.5;color:rgba(242,240,236,.66)">
+              Nobody is clocked onto a job right now. This list fills from open runs, so it stays empty between shifts \u2014 it is not a roster.
+            </div>`}
+      </div>
+
+      <div id="decide" style="padding:12px 13px;border-radius:9px;border:1px solid rgba(255,255,255,.1);display:flex;flex-direction:column;gap:6px">
+        <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.07em;color:${AMBER}">HOW THESE ARE COUNTED</span>
+        <span class="note">Denominator is 7 scheduled hours per machine, Monday to Friday. Utilization counts
+        cutting and setup; spindle utilization counts cutting only. Unattended running counts the same as
+        attended. Values above 100% mean work outside the scheduled weekday, not an error.</span>
+      </div>
+
+      <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
+    </div>
+  </div>`;
+}
+
+async function load() {
+  if (!mayView(sessionUser())) { render(); return; }
+  try { F = await api.floorStatus(); } catch (e) { F = F || null; }
+  render();
+}
+
+load();
+setInterval(load, 15000);                       // fresh enough for a glance, cheap enough to leave up
+setInterval(render, 1000);                      // keeps the elapsed clocks moving — and closes the
+                                                // board within a second of a sign-out elsewhere
+</script>
+</body>
+</html>

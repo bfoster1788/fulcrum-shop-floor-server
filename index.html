@@ -1,0 +1,1470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#131211">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Shop Floor">
+<title>Shop Floor — Fulcrum</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Barlow+Semi+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  *{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; height:100%; overflow:hidden; }
+  body {
+    background:#131211; color:#f2f0ec;
+    font-family:"Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-user-select:none; user-select:none;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  #app { display:flex; flex-direction:column; height:100%; position:relative; overflow:hidden; }
+  .scroll { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+  .mono { font-family:'JetBrains Mono', ui-monospace, monospace; }
+  h1 { margin:0; font:700 25px/1 'Barlow Semi Condensed', Helvetica, sans-serif; text-transform:uppercase; letter-spacing:.01em; }
+  h2 { margin:0; font:700 19px/1 'Barlow Semi Condensed', Helvetica, sans-serif; text-transform:uppercase; }
+  button { font-family:inherit; color:inherit; cursor:pointer; border:none; background:none; }
+  .btn { min-height:62px; border-radius:10px; background:#f5a524; color:#131211;
+         font:700 16px/1 Helvetica, sans-serif; letter-spacing:.02em; }
+  .btn[disabled] { background:rgba(255,255,255,.1); color:rgba(242,240,236,.66); }
+  .btn-ghost { min-height:56px; border-radius:10px; background:#131211; color:#f2f0ec;
+               border:1px solid rgba(255,255,255,.18); font:600 14px/1 Helvetica, sans-serif; letter-spacing:.04em; }
+  .card { background:#1b1a18; border:1px solid rgba(255,255,255,.08); border-radius:11px; }
+  .label { font:500 10px/1 'JetBrains Mono', monospace; letter-spacing:.1em; color:rgba(242,240,236,.68); }
+  .sheet-wrap { position:absolute; inset:0; background:rgba(9,9,8,.74);
+                display:flex; flex-direction:column; justify-content:flex-end; z-index:20; }
+  .sheet { background:#1b1a18; border-top:2px solid #f5a524; border-radius:16px 16px 0 0;
+           padding:18px 14px calc(16px + env(safe-area-inset-bottom));
+           display:flex; flex-direction:column; gap:12px; max-height:86%; overflow-y:auto; }
+  .row { display:flex; align-items:center; gap:10px; }
+  .stepper { display:flex; align-items:center; gap:9px; }
+  .stepper button { width:62px; min-height:66px; border-radius:10px; background:#131211;
+                    border:1px solid rgba(255,255,255,.14); font:500 24px/1 'JetBrains Mono', monospace; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .dot { width:7px; height:7px; border-radius:4px; flex:none; }
+  .running { animation: pulse 1.7s ease-in-out infinite; }
+  .chip { min-height:44px; padding:0 13px; border-radius:22px; background:#1b1a18;
+          border:1px solid rgba(255,255,255,.13); font:600 11.5px/1 'JetBrains Mono', monospace;
+          color:rgba(242,240,236,.7); }
+  .chip[aria-pressed="true"] { background:rgba(245,165,36,.15); border-color:#f5a524; color:#f5a524; }
+  nav { flex:none; display:flex; gap:1px; background:rgba(255,255,255,.08);
+        border-top:1px solid rgba(255,255,255,.08); }
+  nav button, nav a { flex:1; min-height:62px; background:#151413; color:rgba(242,240,236,.68);
+               font:600 10px/1.3 'JetBrains Mono', monospace; letter-spacing:.04em; text-align:center; }
+  nav a { text-decoration:none; }
+  nav button[aria-current="page"] { background:#232120; color:#f2f0ec; }
+  nav button.primary { background:#f5a524; color:#131211; font-weight:700; }
+  .toast { position:absolute; left:14px; right:14px; bottom:78px; padding:13px 14px; border-radius:10px;
+           background:#2a2723; border:1px solid rgba(46,212,122,.45);
+           font:500 11.5px/1.35 'JetBrains Mono', monospace; z-index:30; }
+  #scanner { position:fixed; inset:0; z-index:60; background:#0c0c0b; display:flex; flex-direction:column;
+             padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  #scanner[hidden] { display:none; }
+  #scanner video { width:100%; height:100%; object-fit:cover; }
+  .scan-frame { position:absolute; left:8%; right:8%; top:26%; height:26%;
+                border:3px solid #f5a524; border-radius:8px;
+                box-shadow:0 0 0 9999px rgba(12,12,11,.62); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<!-- The scanner lives outside #app: its <video> must survive the innerHTML
+     re-render that every state change performs. -->
+<div id="scanner" hidden></div>
+
+<script type="module">
+import { api, equipment, isMock } from './api.js';
+
+const GREEN = '#2ed47a', AMBER = '#f5a524', RED = '#ff8a7d', BLUE = '#8fb4ff';
+
+// Pause reasons split by where they can actually go. Fulcrum's stop endpoint takes no
+// reason, and its reason codes live only on person-level Break entries — so equipment
+// reasons are recorded on our side, and only a genuine break becomes a Fulcrum break.
+const PAUSE_GROUPS = [
+  { kind: 'downtime', title: 'THE JOB OR MACHINE STOPPED', note: 'Timer stops. Reason is recorded as equipment downtime — you stay on the clock.',
+    reasons: ['Tool change', 'Machine alarm / down', 'Material short', 'Waiting on inspection', 'Program or print question'] },
+  { kind: 'break', title: 'YOU ARE STOPPING', note: 'Timer stops and Fulcrum starts a break on your clock.',
+    reasons: ['Break', 'End of shift'] },
+];
+const STORE = 'shopfloor.state.v1';
+
+// Who may open the floor board. Roles come from Fulcrum's user record, so this list is
+// the whole of the rule — a role added there needs adding here. A gate on the client is
+// a VISIBILITY gate: it keeps the board off the wrong phones, it is not security. The
+// board's data comes from our server, so anyone who wants the numbers badly enough can
+// still request them — put the check on the server if that matters.
+const BOARD_ROLES = ['administrator', 'production supervisor', 'quality manager', 'quality supervisor'];
+const canSeeBoard = (u) => !!u && BOARD_ROLES.indexOf(String(u.role || '').trim().toLowerCase()) > -1;
+
+const app = document.getElementById('app');
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+const fmt = (sec) => {
+  const h = Math.floor(sec/3600), m = Math.floor(sec%3600/60), s = Math.floor(sec%60);
+  return h + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+};
+const eqOf = (id) => equipment.filter((e) => e.id === id)[0];
+const needsEquipment = (wc) => wc === 'CNC Machining';
+
+// The only legal entry type for a given step and machine. entryType is free-standing
+// state but the options depend on the machine, so every reader resolves through this
+// rather than trusting S.entryType: step-level work is always labor, and `machine`
+// (unattended) collapses to `run` on equipment that cannot run lights-out.
+function legalType(type, equipId, cnc) {
+  if (!cnc) return 'labor';
+  if (type === 'machine') return (eqOf(equipId) || {}).lightsOut ? 'machine' : 'run';
+  return type === 'setup' ? 'setup' : 'run';
+}
+
+let S = {
+  screen: 'runs', signedIn: false, user: null,
+  jobs: [], timers: [], jobId: null, timerId: null, routingLoading: false,
+  query: '', sheet: null, pickEquip: null, entryType: 'run',
+  // Fulcrum has no paused state and no reason field, so a paused run only exists here.
+  // Keyed by userId first, then timeEntryId — several operators share a phone, and a
+  // record must never re-attach to whoever signs in next. This device's storage is the
+  // ONLY home for paused runs — there is no server route for them, so a reinstalled
+  // phone cannot recover one.
+  pausedByUser: {},
+  posting: false,
+  // Web NFC exists only in Chrome on Android. On iPhone there is no badge path at all,
+  // so name search is not a fallback there — it is the only way in.
+  nfc: typeof window.NDEFReader === 'function',
+  scanning: false, operators: [], signInMode: 'badge',
+  // Held writes are per-operator for the same reason paused runs are: several people
+  // share a phone, and one operator's queued time must never surface — or be discarded
+  // — under another's name. Each entry carries the calls needed to replay it.
+  outboxByUser: {},
+  online: navigator.onLine, installable: false,
+  postQty: null, postScrap: 0, toast: '',
+};
+
+const TABS = ['runs', 'search', 'outbox'];
+
+// The job cache lives under its OWN key. Paused runs and the outbox exist only on this
+// device, so a quota failure from a large job list must never abort persisting them.
+// Capped at 40 jobs, newest first — enough to work a shift offline, not a full mirror.
+const JOB_STORE = STORE + '.jobs';
+const readJobCache = () => {
+  try { return JSON.parse(localStorage.getItem(JOB_STORE) || '[]'); } catch (e) { return []; }
+};
+const writeJobCache = (jobs) => {
+  try { localStorage.setItem(JOB_STORE, JSON.stringify(jobs.slice(0, 40))); } catch (e) {}
+};
+
+try {
+  const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
+  if (saved) S = {
+    ...S,
+    signedIn: !!saved.user,
+    user: saved.user || null,
+    jobs: readJobCache(),
+    // Only tab-level screens survive a relaunch. A saved job or timer view would
+    // reopen against an id we no longer hold (jobs close between shifts), so those
+    // degrade to the run board rather than a dead end.
+    screen: TABS.indexOf(saved.screen) > -1 ? saved.screen : 'runs',
+    outboxByUser: saved.outboxByUser || {},
+    pausedByUser: saved.pausedByUser || {},
+  };
+} catch (e) {}
+const persist = () => {
+  try {
+    localStorage.setItem(STORE, JSON.stringify({
+      user: S.user,
+      screen: TABS.indexOf(S.screen) > -1 ? S.screen : 'runs',
+      outboxByUser: S.outboxByUser,
+      pausedByUser: S.pausedByUser,
+    }));
+  } catch (e) {}
+};
+
+// This operator's paused runs and held writes, plus writers that keep the scoping intact.
+const myPaused = () => (S.user && S.pausedByUser[S.user.userId]) || {};
+const setMyPaused = (map) => ({ pausedByUser: { ...S.pausedByUser, [S.user.userId]: map } });
+const myOutbox = () => (S.user && S.outboxByUser[S.user.userId]) || [];
+const setMyOutbox = (list) => ({ outboxByUser: { ...S.outboxByUser, [S.user.userId]: list } });
+
+const set = (patch) => { S = { ...S, ...patch }; persist(); render(); };
+let toastTimer;
+const flash = (msg) => {
+  set({ toast: msg });
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => set({ toast: '' }), 3200);
+};
+
+// --- data ---------------------------------------------------------------
+
+// Accumulated seconds on a timer, whether it is running now or stopped.
+// A record that arrives already stopped carries laborHours (or a stop timestamp),
+// so elapsed must be derived on ingest rather than assumed to be live.
+function secondsOf(t) {
+  if (t.isPaused) return Number(t.heldSeconds) || 0;
+  return Math.max(0, (Date.now() - new Date(t.startedOnUtc)) / 1000);
+}
+
+function ingestSeconds(t) {
+  if (Number.isFinite(t.heldSeconds)) return t.heldSeconds;
+  if (Number.isFinite(t.laborHours)) return t.laborHours * 3600;
+  const end = t.stoppedOnUtc ? new Date(t.stoppedOnUtc) : new Date();
+  return Math.max(0, (end - new Date(t.startedOnUtc)) / 1000);
+}
+
+// The board is the union of two reads: Fulcrum's running timers, and our own store of
+// paused runs (Fulcrum has no paused state, so pausing removes a run from its list).
+// Precedence on a collision: this device's unsynced record, then our server's, then
+// Fulcrum's — elapsed on a paused run is never recomputed from wall-clock time, or
+// downtime would be counted as run time.
+// Never rejects, and never lets one failing read hide another's data. Held runs live
+// ONLY on this device, so they must hydrate whether or not the server answers — an
+// operator being told "nothing running" about a machine sitting mid-job is a worse
+// failure than a visible error.
+async function refresh() {
+  const [jobsRes, timersRes] = await Promise.all([
+    api.searchJobs('').then((r) => r, (e) => e),
+    api.activeTimers(S.user.userId).then((r) => r, () => ({ items: [] })),
+  ]);
+
+  const failed = !jobsRes || !jobsRes.items;
+  const jobs = failed ? S.jobs : jobsRes.items;   // keep last known rather than blanking
+
+  const pausedById = myPaused();
+  const live = (timersRes.items || []).map((t) => pausedById[t.timeEntryId] || t);
+  const liveIds = live.map((t) => t.timeEntryId);
+  const restored = Object.keys(pausedById)
+    .filter((id) => liveIds.indexOf(id) === -1)
+    // No job-membership filter: a held run carries its own jobName and operationName,
+    // so it renders whether or not the job list came back.
+    .map((id) => pausedById[id]);
+
+  if (!failed) writeJobCache(jobs);
+  set({
+    jobs,
+    timers: live.concat(restored),
+    loadError: failed ? (jobsRes && jobsRes.status ? 'Server error ' + jobsRes.status : 'No connection') : null,
+  });
+}
+
+// Bump on every deploy. Shown in the header and on the sign-in screen so a phone
+// serving a stale shell is identifiable without a console.
+const BUILD = '2026.09.14-14';
+
+const jobOf = (id) => S.jobs.filter((j) => j.jobId === id)[0];
+
+// Letters and digits only. Search has to survive how a person actually types their own
+// name on a shop-floor phone: "b.foster", "B Foster", "bfoster".
+const squash = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// What the operator reads off the traveler. jobId is Fulcrum's 24-char ObjectId and
+// stays the API key only — it is never a label.
+const jobNo = (job) => String((job && (job.systemJobNumber != null ? job.systemJobNumber : job.jobId)) || '');
+const timerJobName = (t) => {
+  const j = jobOf(t.jobId);
+  return (j && j.jobName) || t.jobName || 'Job ' + timerJobNo(t);
+};
+const timerJobNo = (t) => {
+  const j = jobOf(t.jobId);
+  if (j) return jobNo(j);
+  return String(t.jobNumber != null ? t.jobNumber : (t.systemJobNumber != null ? t.systemJobNumber : t.jobId) || '');
+};
+// Defensive on purpose: a cached job, a barcode hydration or a live read whose routing
+// did not come down has no operations array. A throw in here blanks the whole phone,
+// because every render path calls it.
+const curOp = (job) => {
+  const ops = (job && job.operations) || [];
+  const i = job && job.currentOperationIndex;
+  return ops[typeof i === 'number' && ops[i] ? i : 0] || null;
+};
+// Which item-to-make an operation belongs to. The routing groups operations per item,
+// so complete/add-quantity have to resolve it from the operation, not the job.
+const itemIdFor = (job, operationId, timer) => {
+  const op = ((job && job.operations) || []).filter((o) => o.operationId === operationId)[0];
+  return (op && op.itemToMakeId) || (timer && timer.itemToMakeId) || (job && job.itemToMakeId) || null;
+};
+
+const timerOf = (id) => S.timers.filter((t) => t.timeEntryId === id)[0];
+const elapsedOf = (t) => secondsOf(t);
+
+// A run this operator already has open on the same work. Keyed by job + operation, plus
+// equipment on CNC — the same step legitimately runs on two spindles at once, but at
+// step level there is no machine to tell two cards apart, so a second one is a duplicate
+// whose COMPLETE would post the same pieces twice.
+function runOn(jobId, operationId, equipId) {
+  return S.timers.filter((t) =>
+    t.jobId === jobId &&
+    t.operationId === operationId &&
+    (equipId === undefined || (t.equipmentId || null) === (equipId || null))
+  )[0];
+}
+
+// Queue a write when offline so a lost signal never costs an operator their time.
+// `replay` is the list of calls that reproduce this write later — without it a queued
+// entry could only be counted, not actually posted.
+// Returns 'ok' (posted), 'queued' (held locally, done as far as this device is
+// concerned), or 'fail' (the server answered badly — keep the sheet open).
+async function write(label, fn, replay) {
+  if (!S.online) {
+    set(setMyOutbox(myOutbox().concat([{
+      label, at: new Date().toISOString(), userId: S.user.userId, replay: replay || null,
+    }])));
+    flash('No signal · held locally: ' + label);
+    return 'queued';
+  }
+  try { await fn(); return 'ok'; }
+  catch (e) {
+    flash('Fulcrum rejected that · nothing posted');
+    return 'fail';
+  }
+}
+
+// --- actions ------------------------------------------------------------
+
+const actions = {
+  nav: (screen) => set({ screen, sheet: null }),
+
+  // The identity block in the header goes to whatever this person's landing view is —
+  // the same rule as launch, so "home" means one thing: the board for supervisors,
+  // a scan for everyone on the floor.
+  home: () => {
+    if (canSeeBoard(S.user)) { location.assign('./board.html'); return; }
+    set({ screen: 'search', sheet: null });
+    actions.openScan();
+  },
+
+  signInAs: async (userId) => {
+    const op = (S.operators.filter((o) => o.userId === userId)[0]) || null;
+    if (!op) return;
+    // Same landing rule as a cold launch, applied at the moment the role becomes known:
+    // board-authorized people go to the board, everyone else lands in a scan.
+    if (canSeeBoard(op)) {
+      set({ signedIn: true, user: op, scanning: false, timers: [], jobs: [] });
+      location.assign('./board.html');
+      return;
+    }
+    set({ signedIn: true, user: op, scanning: false, timers: [], jobs: [], screen: 'search' });
+    await refresh();
+    // No clock-in route exists yet, so this app has NOT punched a Fulcrum time clock.
+    // Saying otherwise would assert a record that does not exist.
+    flash('Signed in as ' + op.name);
+    actions.openScan();
+  },
+
+  scanBadge: async () => {
+    if (!S.nfc) { set({ signInMode: 'name' }); return; }
+    set({ scanning: true });
+    try {
+      const reader = new window.NDEFReader();
+      await reader.scan();
+      reader.onreading = async (e) => {
+        // Pass the serial through as reported; the server owns format normalization.
+        const badgeId = (e.serialNumber || '').replace(/:/g, '').toUpperCase();
+        try {
+          const op = await api.lookupBadge(badgeId);
+          set({ operators: S.operators.filter((o) => o.userId !== op.userId).concat([op]) });
+          actions.signInAs(op.userId);
+        } catch (err) {
+          set({ scanning: false });
+          flash('Badge ' + badgeId + ' is not registered · use name search');
+        }
+      };
+    } catch (err) {
+      set({ scanning: false, signInMode: 'name' });
+      flash('Badge reader unavailable on this phone');
+    }
+  },
+
+  // Stands in for a real tap so the flow is testable without a reader. Uses Brian's
+  // actual fob id, so this exercises the same lookup a live scan would.
+  simulateBadge: async () => {
+    try {
+      const op = await api.lookupBadge('0029392');
+      set({ operators: S.operators.filter((o) => o.userId !== op.userId).concat([op]) });
+      actions.signInAs(op.userId);
+    } catch (e) { flash('Badge not registered'); }
+  },
+
+  signInMode: (mode) => set({ signInMode: mode, scanning: false }),
+
+  signOut: async () => {
+    set({ signedIn: false, user: null, timers: [], screen: 'runs', sheet: null, signInMode: S.nfc ? 'badge' : 'name' });
+  },
+
+  openScan: () => {
+    openScanner(async (code) => {
+      try {
+        const job = await api.jobByNumber(code);
+        closeScanner();
+        const known = S.jobs.filter((j) => j.jobId === job.jobId).length > 0;
+        set({
+          jobs: known ? S.jobs.map((j) => (j.jobId === job.jobId ? job : j)) : S.jobs.concat([job]),
+          screen: 'job', jobId: job.jobId, sheet: null,
+        });
+        actions.openJob(job.jobId);
+        flash('Job ' + job.jobId + ' · ' + job.jobName);
+      } catch (e) {
+        closeScanner();
+        set({ screen: 'search', query: String(code) });
+        flash('No open job numbered ' + code + ' · searching instead');
+      }
+    });
+  },
+
+  retry: () => refresh(),
+
+  openJob: (jobId) => {
+    set({ screen: 'job', jobId, routingLoading: true });
+    const have = jobOf(jobId);
+    if (have && (have.operations || []).length) { set({ routingLoading: false }); return; }
+    // Routing is a second read, so it is fetched per job on open rather than for all 48
+    // search hits. Until it lands the job view says the routing is not available.
+    api.jobWithRouting(jobId).then((full) => {
+      if (!full || !full.jobId) return;
+      const known = S.jobs.filter((j) => j.jobId === full.jobId).length > 0;
+      const jobs = known
+        ? S.jobs.map((j) => (j.jobId === full.jobId ? { ...j, ...full } : j))
+        : S.jobs.concat([full]);
+      set({ jobs });
+      writeJobCache(jobs);
+    }, (e) => flash('Routing failed to load · ' + (e && e.status ? 'server ' + e.status : 'no answer')))
+      .then(() => set({ routingLoading: false }));
+  },
+  openTimer: (timerId) => set({ screen: 'timer', timerId }),
+  query: (q) => set({ query: q }),
+
+  openStart: (jobId) => {
+    const job = jobOf(jobId);
+    const op = curOp(job);
+    // No pre-fill on CNC. Fulcrum leaves scheduledEquipmentName blank on machining
+    // steps — the routing plans the operation, the floor decides the spindle — so an
+    // invented default would be a guess the operator has to notice and undo.
+    set({ sheet: 'start', jobId, pickEquip: null, entryType: needsEquipment(op.workCenterName) ? 'run' : 'labor' });
+  },
+  pickEquip: (id) => set({ pickEquip: id }),
+  pickType: (t) => set({ entryType: t }),
+
+  confirmStart: async () => {
+    if (S.posting) return;
+    const job = jobOf(S.jobId);
+    const op = curOp(job);
+    const cnc = needsEquipment(op.workCenterName);
+    if (cnc && !S.pickEquip) return;
+    // Backstop for the duplicate path: never open a second timer on work this operator
+    // already has open on the same machine (or the same step, off CNC).
+    const dupe = runOn(job.jobId, op.operationId, cnc ? S.pickEquip : null);
+    if (dupe) {
+      set({ sheet: null, screen: 'timer', timerId: dupe.timeEntryId });
+      flash('You already have this step open here');
+      return;
+    }
+    const type = legalType(S.entryType, S.pickEquip, cnc);
+    // itemToMakeId rides on the OPERATION now: the routing read groups operations per
+    // item-to-make, and Fulcrum's start call needs the pair.
+    const itemToMakeId = itemIdFor(job, op.operationId);
+    set({ posting: true });
+    const result = await write('start ' + job.jobName, async () => {
+      const t = await api.startTimer({
+        userId: S.user.userId, jobId: job.jobId, itemToMakeId: itemToMakeId,
+        operationId: op.operationId, type,
+        equipmentId: cnc ? S.pickEquip : null,   // ours, not Fulcrum's
+      });
+      set({ timers: S.timers.concat([t]), timerId: t.timeEntryId });
+    }, [{
+      path: '/timers/start',
+      body: {
+        userId: S.user.userId, jobId: job.jobId, itemToMakeId: itemToMakeId,
+        operationId: op.operationId, type, equipmentId: cnc ? S.pickEquip : null,
+      },
+    }]);
+    if (result === 'fail') { set({ posting: false }); return; }
+    set({ posting: false, sheet: null, screen: result === 'ok' ? 'timer' : 'runs' });
+    if (result === 'ok') flash('Started ' + job.jobName + ' · ' + op.operationName + ' · ' + (cnc ? S.pickEquip : op.workCenterName));
+  },
+
+  toggleTimer: async (timerId) => {
+    const t = timerOf(timerId);
+    if (!t) return;
+    if (!t.isPaused) { set({ sheet: 'pause', timerId }); return; }
+
+    // Resuming cannot un-stop a Fulcrum timer, so it starts a fresh one on the same
+    // step and carries the accumulated seconds forward as this app's running total.
+    const job = jobOf(t.jobId);
+    const held = secondsOf(t);
+    const resumeBody = { userId: S.user.userId, timerId: timerId };
+    const ok = await write('resume ' + t.jobName, async () => {
+      // Pause was a break on this timer, so resuming ends the break rather than
+      // starting a new timer — the step stays one Fulcrum entry.
+      const fresh = await api.resumeTimer(resumeBody);
+      const merged = {
+        ...t, ...(fresh && fresh.timeEntryId ? fresh : null),
+        isPaused: false, pauseReason: '', pauseKind: '', stoppedOnUtc: null, heldSeconds: null,
+        startedOnUtc: new Date(Date.now() - held * 1000).toISOString(),
+      };
+      const nextPaused = { ...myPaused() };
+      delete nextPaused[timerId];
+      set({
+        ...setMyPaused(nextPaused),
+        timers: S.timers.filter((x) => x.timeEntryId !== timerId).concat([merged]),
+        timerId: merged.timeEntryId,
+      });
+    }, [
+      { path: '/timers/break/end', body: resumeBody },
+    ]);
+    if (ok === 'ok') flash('Started · clock running on ' + (t.equipmentId || (job && (curOp(job) || {}).workCenterName) || 'this step'));
+  },
+
+  pauseWith: async (arg) => {
+    const [kind, reason] = String(arg).split('|');
+    const t = timerOf(S.timerId);
+    const held = secondsOf(t);
+    const pauseBody = { userId: S.user.userId, timerId: t.timeEntryId, reason, kind, heldSeconds: held };
+    await write('pause ' + t.jobName, () => api.pauseTimer(pauseBody), [{
+      path: '/timers/break/start', body: pauseBody,
+    }]);
+    const record = { ...t, userId: S.user.userId, isPaused: true, pauseReason: reason, pauseKind: kind, heldSeconds: held, stoppedOnUtc: new Date().toISOString() };
+    set({
+      sheet: null,
+      ...setMyPaused({ ...myPaused(), [t.timeEntryId]: record }),
+      timers: S.timers.map((x) => x.timeEntryId === t.timeEntryId ? record : x),
+    });
+    flash(kind === 'break'
+      ? 'Paused · ' + reason.toLowerCase() + ' started on your Fulcrum clock'
+      : 'Paused · ' + reason.toLowerCase() + ' recorded as equipment downtime');
+  },
+
+  openComplete: (timerId) => set({ sheet: 'complete', timerId, postQty: null, postScrap: 0 }),
+  // Scrap is captured here because nothing upstream records it: OEE's quality factor has
+  // no other source, and an operator closing a step is the only moment anyone knows the
+  // bad count. Fulcrum takes it on /complete; a partial post carries it for our own
+  // server to keep (see REPORTS-API.md).
+  bumpScrap: (d) => {
+    const cur = Number.isFinite(S.postScrap) ? S.postScrap : 0;
+    set({ postScrap: Math.max(0, cur + Number(d)) });
+  },
+  setScrap: (n) => set({ postScrap: Math.max(0, Number(n) || 0) }),
+  bumpQty: (d) => {
+    const t = timerOf(S.timerId), job = jobOf(t.jobId);
+    const max = job.quantityRemaining;
+    const cur = S.postQty == null ? Math.min(1, max) : S.postQty;
+    set({ postQty: Math.max(0, Math.min(max, cur + Number(d))) });
+  },
+  setQty: (n) => {
+    const t = timerOf(S.timerId), job = jobOf(t.jobId);
+    set({ postQty: Math.max(0, Math.min(job.quantityRemaining, Number(n))) });
+  },
+
+  confirmComplete: async () => {
+    if (S.posting) return;                       // a second tap must not double-post
+    const t = timerOf(S.timerId);
+    const job = t && jobOf(t.jobId);
+    if (!t || !job) return;
+    const open = job.quantityRemaining;
+    const qty = Number.isFinite(S.postQty) ? S.postQty : Math.min(1, open);
+    if (!Number.isFinite(qty) || qty < 1) return;
+    const closes = qty >= open;
+    const scrap = Number.isFinite(S.postScrap) ? S.postScrap : 0;
+
+    set({ posting: true });
+    const itemToMakeId = itemIdFor(job, t.operationId, t);
+    const qtyPath = '/jobs/' + job.jobId + '/items-to-make/' + itemToMakeId + '/operations/' + t.operationId +
+      (closes ? '/complete' : '/add-quantity-completed');
+    // Same order as the direct call below: end an outstanding break, then stop.
+    const replay = []
+      .concat(t.isPaused ? [{ path: '/timers/break/end', body: { userId: S.user.userId, timerId: t.timeEntryId } }] : [])
+      .concat([{ path: '/timers/stop', body: { userId: S.user.userId, timerId: t.timeEntryId } }])
+      .concat([{ path: qtyPath, body: closes ? { quantity: qty, scrapQuantity: scrap } : { quantity: qty, scrapQuantity: scrap } }]);
+
+    const result = await write('complete ' + job.jobName + ' · ' + qty + ' pcs', async () => {
+      // Close the server-side timer whenever it is still open. Keying this off isPaused
+      // assumed "paused ⇒ already stopped", which nothing enforces — a run that was
+      // already paused when the app loaded can still have an open Fulcrum timer.
+      if (t.isPaused) await api.resumeTimer({ userId: S.user.userId, timerId: t.timeEntryId });
+      await api.stopTimer({ userId: S.user.userId, timerId: t.timeEntryId });
+      if (closes) {
+        await api.completeOperation({ jobId: job.jobId, itemToMakeId: itemToMakeId, operationId: t.operationId, quantity: qty, scrapQuantity: scrap });
+      } else {
+        await api.addQuantity({ jobId: job.jobId, itemToMakeId: itemToMakeId, operationId: t.operationId, quantity: qty, scrapQuantity: scrap });
+      }
+    }, replay);
+
+    if (result === 'fail') { set({ posting: false }); return; }   // sheet stays open
+
+    const nextPaused = { ...myPaused() };
+    delete nextPaused[t.timeEntryId];
+    set({
+      posting: false, sheet: null, screen: 'runs', postQty: null, postScrap: 0,
+      ...setMyPaused(nextPaused),
+      timers: S.timers.filter((x) => x.timeEntryId !== t.timeEntryId),
+    });
+    if (result === 'ok') {
+      await refresh();
+      flash('Posted ' + qty + ' pc' + (qty === 1 ? '' : 's') + ' · ' + job.jobName + (closes ? ' · step closed' : ' · step still open'));
+    }
+  },
+
+  closeSheet: () => set({ sheet: null, screen: S.screen === 'timer' ? 'timer' : S.screen }),
+
+  install: async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    deferredPrompt = null;
+    set({ installable: false });
+  },
+
+  retrySync: async () => {
+    if (!S.online) { flash('Still no signal'); return; }
+    const queued = myOutbox();
+    if (!queued.length) return;
+    set({ posting: true });
+    const stuck = [];
+    for (const entry of queued) {
+      if (!entry.replay || !entry.replay.length) { stuck.push(entry); continue; }
+      try {
+        for (const step of entry.replay) await api.replay(step.path, step.body);
+      } catch (e) { stuck.push(entry); }
+    }
+    set({ posting: false, ...setMyOutbox(stuck) });
+    await refresh();
+    const posted = queued.length - stuck.length;
+    flash(stuck.length
+      ? posted + ' posted · ' + stuck.length + ' still held, Fulcrum refused them'
+      : posted + ' held entr' + (posted === 1 ? 'y' : 'ies') + ' posted to Fulcrum');
+  },
+};
+
+// Typing filters the rendered rows directly. Routing this through set() would call
+// app.innerHTML and destroy the focused input on every keystroke.
+// One filter pass owns the row visibility, the match count and the empty block, so the
+// three can never disagree — it runs on every keystroke AND once after each render of
+// the search screen, which is what kept a stale cached card on screen next to an
+// "no matches" block during hydration.
+function filterJobRows() {
+  const input = app.querySelector('#job-search');
+  if (!input) return;
+  const q = (S.query || '').trim().toLowerCase();
+  const rows = app.querySelectorAll('.job-row');
+  let shown = 0;
+  rows.forEach((row) => {
+    const hit = !q || (row.dataset.search || '').indexOf(q) > -1;
+    // NOT the hidden attribute: these rows carry an inline display, which beats the UA
+    // stylesheet's [hidden] rule, so the row would stay on screen while the count said 0.
+    row.style.display = hit ? 'flex' : 'none';
+    if (hit) shown++;
+  });
+  const count = app.querySelector('#job-count');
+  if (count) count.textContent = shown + (shown === 1 ? ' MATCH' : ' MATCHES');
+  const empty = app.querySelector('#job-empty');
+  if (empty) empty.style.display = shown > 0 ? 'none' : 'flex';
+  const text = app.querySelector('#job-empty-text');
+  if (text && !S.loadError) {
+    text.textContent = q
+      ? 'No open job matches \u201c' + (S.query || '').trim() + '\u201d.'
+      : 'No open jobs loaded.';
+  }
+}
+
+app.addEventListener('input', (e) => {
+  if (!e.target) return;
+  if (e.target.id === 'job-search') {
+    S.query = e.target.value;
+    filterJobRows();
+    return;
+  }
+  if (e.target.id !== 'op-search') return;
+  const q = e.target.value.trim().toLowerCase();
+  // "b.foster", "B. Foster" and "bfoster" are the same person typing. Both sides get
+  // stripped to letters and digits so punctuation and spacing never decide a match.
+  const qs = squash(q);
+  const rows = app.querySelectorAll('.op-row');
+  let shown = 0;
+  rows.forEach((row) => {
+    const hit = !q
+      || (row.dataset.search || '').indexOf(q) > -1
+      || (qs && (row.dataset.squash || '').indexOf(qs) > -1);
+    row.style.display = hit ? 'flex' : 'none';
+    if (hit) shown++;
+  });
+  const empty = app.querySelector('#op-empty');
+  if (empty) {
+    empty.style.display = shown > 0 ? 'none' : 'block';
+    empty.textContent = rows.length ? 'No operator matches that name.' : 'No operators loaded.';
+  }
+});
+
+app.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const fn = actions[el.dataset.act];
+  if (fn) fn(el.dataset.arg);
+});
+
+// --- barcode scanner ----------------------------------------------------
+// Travelers are printed paper, so this is a camera read, not NFC. Two decoders:
+// BarcodeDetector where it exists (Chrome on Android — native and fastest), and ZXing
+// everywhere else, which is what makes scanning work on iPhone. Keyed entry stays as
+// the last resort, because an oily or torn traveler is normal.
+
+const ZXING_URL = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+let zxingPromise = null;
+
+function loadZXing() {
+  if (window.ZXing) return Promise.resolve(window.ZXing);
+  if (zxingPromise) return zxingPromise;
+  zxingPromise = new Promise((resolve) => {
+    const el = document.createElement('script');
+    el.src = ZXING_URL;
+    el.onload = () => resolve(window.ZXing || null);
+    el.onerror = () => resolve(null);
+    document.head.appendChild(el);
+  });
+  return zxingPromise;
+}
+
+const SYMBOLOGIES = ['code_128', 'code_39', 'qr_code', 'data_matrix', 'ean_13', 'itf'];
+
+// Returns a stop function, or null when nothing on this device can decode.
+// Owns attaching the stream and starting playback, because the two decoders need it
+// done differently: BarcodeDetector reads a playing element, while ZXing must attach
+// the stream itself or it waits forever on a play event that already fired.
+async function startDecoding(video, stream, onCode) {
+  if ('BarcodeDetector' in window) {
+    video.srcObject = stream;
+    try { await video.play(); } catch (e) { return null; }
+    const detector = new window.BarcodeDetector({ formats: SYMBOLOGIES });
+    const timer = setInterval(async () => {
+      if (video.readyState < 2) return;
+      try {
+        const found = await detector.detect(video);
+        if (found.length && found[0].rawValue) onCode(found[0].rawValue.trim());
+      } catch (e) { /* a dropped frame is not worth surfacing */ }
+    }, 220);
+    return () => clearInterval(timer);
+  }
+
+  const ZX = await loadZXing();
+  if (!ZX || !ZX.BrowserMultiFormatReader) return null;
+  try {
+    const reader = new ZX.BrowserMultiFormatReader(undefined, 250);
+    reader.decodeFromStream(stream, video, (result) => {
+      if (result) onCode(String(result.getText()).trim());
+    });
+    return () => { try { reader.reset(); } catch (e) {} };
+  } catch (e) { return null; }
+}
+
+const scannerEl = document.getElementById('scanner');
+let scanStop = null;
+
+function closeScanner() {
+  if (scanStop) { scanStop(); scanStop = null; }
+  scannerEl.hidden = true;
+  scannerEl.innerHTML = '';
+}
+
+async function openScanner(onCode) {
+  closeScanner();                       // never leave a previous camera stream running
+  scannerEl.hidden = false;
+  scannerEl.innerHTML = `
+    <div style="flex:none;display:flex;align-items:center;gap:10px;padding:12px 14px;background:#1b1a18">
+      <button id="scan-cancel" class="mono" style="display:flex;align-items:center;min-height:44px;padding-right:12px;font-size:11.5px;color:rgba(242,240,236,.65)">&#10005; CANCEL</button>
+      <span class="mono" style="margin-left:auto;font-size:10px;font-weight:600;letter-spacing:.1em;color:rgba(242,240,236,.68)">SCAN A TRAVELER</span>
+    </div>
+    <div style="flex:1;position:relative;overflow:hidden;background:#111">
+      <video id="scan-video" playsinline muted></video>
+      <div class="scan-frame"></div>
+      <span class="mono" id="scan-hint" style="position:absolute;left:0;right:0;bottom:16px;text-align:center;font-size:10.5px;letter-spacing:.06em;color:#f5a524">
+        STARTING CAMERA\u2026
+      </span>
+    </div>
+    <div style="flex:none;padding:14px;display:flex;flex-direction:column;gap:10px;background:#1b1a18">
+      <div style="display:flex;gap:9px">
+        <input id="scan-manual" inputmode="numeric" autocomplete="off" placeholder="Job number"
+          style="flex:1;min-height:56px;padding:0 14px;border-radius:10px;background:#131211;color:#f2f0ec;
+                 border:1px solid rgba(255,255,255,.16);font:500 15px/1 'JetBrains Mono',monospace">
+        <button id="scan-go" class="btn" style="flex:none;width:112px;min-height:56px;font-size:14px">OPEN</button>
+      </div>
+    </div>`;
+
+  scannerEl.querySelector('#scan-cancel').onclick = closeScanner;
+  const input = scannerEl.querySelector('#scan-manual');
+  const submit = () => { const v = input.value.trim(); if (v) onCode(v); };
+  scannerEl.querySelector('#scan-go').onclick = submit;
+  input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+
+  const hint = () => scannerEl.querySelector('#scan-hint');
+  const video = scannerEl.querySelector('#scan-video');
+  let stream = null, stopDecode = null, done = false;
+  scanStop = () => {
+    done = true;
+    if (stopDecode) stopDecode();
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+  };
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    if (done) { stream.getTracks().forEach((t) => t.stop()); return; }
+  } catch (e) {
+    if (hint()) hint().textContent = 'NO CAMERA ACCESS \u2014 KEY THE NUMBER BELOW';
+    input.focus();
+    return;
+  }
+
+  stopDecode = await startDecoding(video, stream, (code) => {
+    if (done) return;
+    scanStop();
+    onCode(code);
+  });
+  if (done) return;
+  if (stopDecode) {
+    if (hint()) hint().textContent = 'POINT AT THE JOB BARCODE';
+  } else {
+    if (hint()) hint().textContent = 'CANNOT DECODE ON THIS PHONE \u2014 KEY THE NUMBER BELOW';
+    input.focus();
+  }
+}
+
+// --- views --------------------------------------------------------------
+
+function lockView() {
+  const badgeMode = S.signInMode === 'badge' && S.nfc;
+  // Every operator is rendered; filtering happens in the DOM on input rather than by
+  // re-rendering, because a re-render destroys the focused field mid-keystroke.
+  const hits = S.operators;
+  return `
+  <div class="scroll" style="display:flex;flex-direction:column;gap:16px;padding:26px 16px 20px">
+    <div style="display:flex;flex-direction:column;gap:9px">
+      <span class="label">IMPULSE PRECISION · SHOP FLOOR · ${esc(BUILD)}</span>
+      <h1>${badgeMode ? 'Tap your badge' : 'Who are you?'}</h1>
+      <p class="mono" style="margin:0;font-size:12px;line-height:1.6;color:rgba(242,240,236,.6)">
+        ${badgeMode
+          ? 'Hold your shop badge to the back of the phone. Signing in picks up any runs still open under your name.'
+          : S.nfc
+            ? 'Pick your name. Signing in picks up any runs still open under your name.'
+            : 'This phone cannot read badges — Web NFC works only in Chrome on Android. Pick your name instead.'}
+      </p>
+    </div>
+
+    ${S.loadError ? `
+      <div style="padding:13px 14px;border-radius:10px;background:rgba(226,73,59,.14);border:1px solid rgba(226,73,59,.45);display:flex;flex-direction:column;gap:5px">
+        <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.07em;color:${RED}">OPERATOR LIST FAILED TO LOAD</span>
+        <span class="mono" style="font-size:11px;line-height:1.45;color:rgba(242,240,236,.72)">${esc(S.loadError)}. Name search has nothing to search until this loads.</span>
+      </div>` : ''}
+
+    ${badgeMode ? `
+      <div style="display:flex;flex-direction:column;gap:12px;align-items:center;padding:30px 16px;border-radius:14px;background:#1b1a18;border:1px solid ${S.scanning ? 'rgba(245,165,36,.5)' : 'rgba(255,255,255,.09)'}">
+        <span class="dot ${S.scanning ? 'running' : ''}" style="width:13px;height:13px;border-radius:7px;background:${S.scanning ? AMBER : 'rgba(242,240,236,.62)'}"></span>
+        <span class="mono" style="font-size:11.5px;letter-spacing:.06em;color:${S.scanning ? AMBER : 'rgba(242,240,236,.6)'}">${S.scanning ? 'WAITING FOR A BADGE\u2026' : 'READER IDLE'}</span>
+      </div>
+      <button class="btn" data-act="scanBadge">${S.scanning ? 'SCANNING\u2026' : 'START BADGE READER'}</button>
+      <button class="btn-ghost" data-act="simulateBadge">SIMULATE A BADGE TAP</button>
+      <button class="btn-ghost" data-act="signInMode" data-arg="name" style="border-style:dashed">FIND MY NAME INSTEAD</button>`
+    : `
+      <input id="op-search" inputmode="search" autocomplete="off" placeholder="Type your name"
+        style="min-height:60px;padding:0 14px;border-radius:10px;background:#1b1a18;color:#f2f0ec;
+               border:1px solid rgba(255,255,255,.16);font:500 15px/1 'JetBrains Mono',monospace">
+      <div id="op-list" style="display:flex;flex-direction:column;gap:9px">
+        ${hits.length ? hits.map((o) => `
+          <button data-act="signInAs" data-arg="${esc(o.userId)}" class="card op-row"
+            data-search="${esc([o.name, o.firstName, o.lastName, o.role].filter(Boolean).join(' ').toLowerCase())}"
+            data-squash="${esc(squash([o.firstName, o.lastName, o.name, o.role].filter(Boolean).join(' ')))}"
+            style="display:flex;align-items:center;gap:11px;min-height:64px;padding:0 14px;text-align:left">
+            <span style="width:30px;height:30px;border-radius:8px;background:rgba(245,165,36,.16);color:${AMBER};display:grid;place-items:center;font:700 11px/1 'JetBrains Mono',monospace;flex:none">${esc(o.name.replace(/[^A-Z]/g, '').slice(0, 2))}</span>
+            <span style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:0">
+              <span style="font:600 13px/1.1 Helvetica,sans-serif">${esc(o.name)}</span>
+              <span class="mono" style="font-size:9.5px;letter-spacing:.05em;color:rgba(242,240,236,.6)">${esc(String(o.role).toUpperCase())}${o.shift ? ' \u00b7 ' + esc(String(o.shift).toUpperCase()) + ' SHIFT' : ''}</span>
+            </span>
+            <span class="mono" style="color:${AMBER}">&rsaquo;</span>
+          </button>`).join('')
+        : ''}
+        <div id="op-empty" class="mono" ${hits.length ? 'hidden' : ''} style="padding:20px 14px;text-align:center;font-size:11.5px;color:rgba(242,240,236,.68);border:1px dashed rgba(255,255,255,.16);border-radius:11px">
+          ${S.operators.length ? 'No operator matches that name.' : 'No operators loaded.'}
+        </div>
+      </div>
+      ${S.nfc ? `<button class="btn-ghost" data-act="signInMode" data-arg="badge" style="border-style:dashed">TAP A BADGE INSTEAD</button>` : ''}`}
+  </div>`;
+}
+
+function runsView() {
+  const cards = S.timers.map((t) => {
+    const job = jobOf(t.jobId);
+    const ink = t.isPaused ? AMBER : GREEN;
+    const secs = secondsOf(t);
+    // Quantities come from the job, not the timer. With no job loaded they are unknown,
+    // and an unknown count must never render as a confident zero.
+    const qty = job && job.quantity != null ? job.quantity : null;
+    const done = qty != null ? qty - job.quantityRemaining : null;
+    const pct = qty ? Math.round(done / qty * 100) : 0;
+    return `
+    <div class="card" style="border-left:3px solid ${ink};overflow:hidden">
+      <button data-act="openTimer" data-arg="${t.timeEntryId}" style="width:100%;display:flex;flex-direction:column;gap:9px;padding:13px 14px 11px;text-align:left">
+        <div class="row">
+          <span class="dot ${t.isPaused ? '' : 'running'}" style="background:${ink}"></span>
+          <span class="mono" style="font-size:10px;font-weight:700;letter-spacing:.09em;color:${ink}">${t.isPaused ? 'PAUSED \u00b7 ' + esc((t.pauseReason || '').toUpperCase()) : 'RUNNING \u00b7 ' + esc(String(t.entryType).toUpperCase())}</span>
+          <span class="mono" style="margin-left:auto;font-size:10.5px;color:rgba(242,240,236,.6)">${esc(t.equipmentId || (job && job.operations ? (curOp(job) || {}).workCenterName : ''))}</span>
+        </div>
+        <div class="row" style="align-items:flex-start;gap:8px">
+          <span style="flex:1;min-width:0;font:700 19px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(timerJobName(t))}</span>
+          <span class="mono" style="flex:none;font-size:22px;color:${ink}">${fmt(secs)}</span>
+        </div>
+        <div class="mono" style="font-size:10.5px;color:rgba(242,240,236,.66)">Job ${esc(timerJobNo(t))} \u00b7 ${esc(t.operationName)}</div>
+        ${qty != null ? `
+          <div style="height:6px;border-radius:3px;background:rgba(255,255,255,.09);overflow:hidden">
+            <div style="height:100%;border-radius:3px;background:${ink};width:${pct}%"></div>
+          </div>
+          <div class="mono row" style="font-size:10.5px;color:rgba(242,240,236,.6)">
+            <span>${done} / ${qty} PCS</span>
+            <span style="margin-left:auto">${job.quantityRemaining} OPEN</span>
+          </div>`
+        : `
+          <div class="mono" style="font-size:10.5px;color:rgba(242,240,236,.6)">PIECE COUNT UNAVAILABLE \u00b7 JOB NOT LOADED</div>`}
+      </button>
+      <div style="display:flex;gap:1px;background:rgba(255,255,255,.08)">
+        <button data-act="toggleTimer" data-arg="${t.timeEntryId}" style="flex:1;min-height:50px;background:#151413;font:600 12px/1 Helvetica,sans-serif;letter-spacing:.04em;color:${t.isPaused ? GREEN : '#f2f0ec'}">${t.isPaused ? 'START' : 'PAUSE'}</button>
+        <button data-act="openComplete" data-arg="${t.timeEntryId}" style="flex:1;min-height:50px;background:#151413;color:${AMBER};font:600 12px/1 Helvetica,sans-serif;letter-spacing:.04em">COMPLETE</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  const active = S.timers.filter((t) => !t.isPaused).length;
+  return `
+  <div class="scroll" style="padding:14px 14px 18px;display:flex;flex-direction:column;gap:11px">
+    <div class="row">
+      <h2>My runs</h2>
+      <span class="mono" style="margin-left:auto;font-size:10px;letter-spacing:.06em;color:rgba(242,240,236,.6)">${S.timers.length} OPEN \u00b7 ${active} ACTIVE</span>
+    </div>
+    ${S.timers.length ? cards : `
+      <div style="padding:26px 16px;border:1px dashed rgba(255,255,255,.16);border-radius:11px;display:flex;flex-direction:column;gap:11px;text-align:center">
+        <span class="mono" style="font-size:12px;line-height:1.5;color:rgba(242,240,236,.6)">Nothing running. Scan a traveler or search for a job to start one.</span>
+        <button class="btn-ghost" data-act="openScan">SCAN A TRAVELER</button>
+      </div>`}
+  </div>`;
+}
+
+function searchView() {
+  // Every job is rendered; the count and the empty block are set by filterJobRows after
+  // this returns, so there is one source of truth for what is on screen.
+  const hits = S.jobs;
+  return `
+  <div class="scroll">
+    <div style="display:flex;flex-direction:column;gap:9px;padding:14px 14px 10px">
+      <div style="display:flex;gap:9px;align-items:center">
+        <div style="flex:1;min-height:56px;padding:0 14px;border-radius:10px;background:#1b1a18;border:1px solid rgba(245,165,36,.4);display:flex;align-items:center;gap:9px">
+          <span class="mono" style="color:rgba(242,240,236,.6)">/</span>
+          <input id="job-search" inputmode="search" autocomplete="off" value="${esc(S.query)}" placeholder="search jobs"
+            style="flex:1;min-width:0;border:0;outline:0;background:transparent;color:#f2f0ec;font:500 14px/1 'JetBrains Mono',monospace">
+        </div>
+        <button data-act="openScan" aria-label="Scan a traveler barcode" style="flex:none;width:56px;min-height:56px;border-radius:10px;
+          border:1px solid rgba(245,165,36,.45);background:rgba(245,165,36,.1);display:grid;place-items:center">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="${AMBER}" stroke-width="2" stroke-linecap="round">
+            <path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>
+            <path d="M7 12h10"/>
+          </svg>
+        </button>
+      </div>
+      <div class="mono" style="font-size:10.5px;color:rgba(242,240,236,.66)">Matches job number, job name, item number, customer and step name \u00b7 or scan the traveler</div>
+    </div>
+    <div id="job-count" class="label" style="padding:14px 14px 6px">${hits.length} MATCH${hits.length === 1 ? '' : 'ES'}</div>
+    <div style="display:flex;flex-direction:column;gap:9px;padding:0 14px 18px">
+      <div id="job-empty" style="padding:22px 16px;border:1px dashed ${S.loadError ? 'rgba(226,73,59,.5)' : 'rgba(255,255,255,.16)'};border-radius:11px;display:flex;flex-direction:column;gap:11px;text-align:center">
+          <span id="job-empty-text" class="mono" style="font-size:12px;line-height:1.5;color:rgba(242,240,236,.6)">${S.loadError
+            ? 'Job list failed to load \u2014 ' + esc(S.loadError) + '. This is not an empty shop; nothing could be read.'
+            : (S.query.trim() ? 'No open job matches &ldquo;' + esc(S.query.trim()) + '&rdquo;.' : 'No open jobs loaded.')}</span>
+          <button class="btn-ghost" data-act="${S.loadError ? 'retry' : 'openScan'}">${S.loadError ? 'RETRY' : 'SCAN THE TRAVELER INSTEAD'}</button>
+      </div>
+      ${S.jobs.map((j) => {
+        const op = curOp(j) || {};
+        const mine = runOn(j.jobId, op.operationId);
+        return `
+        <button data-act="openJob" data-arg="${esc(j.jobId)}" class="card job-row"
+          data-search="${esc([jobNo(j), j.jobId, j.jobName, j.itemNumber, j.customerName].concat((j.operations || []).map((o) => o.operationName)).filter(Boolean).join(' ').toLowerCase())}"
+          style="display:flex;flex-direction:column;gap:8px;padding:13px 14px;text-align:left">
+          <div class="row" style="align-items:flex-start;gap:7px">
+            <span style="flex:1;min-width:0;font:700 19px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(j.jobName)}</span>
+            ${mine ? `<span class="mono" style="flex:none;padding:2px 6px;border-radius:4px;background:rgba(46,212,122,.16);color:${GREEN};font-size:8.5px;font-weight:700;letter-spacing:.06em">YOURS IS OPEN</span>` : ''}
+          </div>
+          <div class="mono" style="font-size:10px;line-height:1.5;color:rgba(242,240,236,.62)">Job ${esc(jobNo(j))} \u00b7 ${esc(j.quantityRemaining)} / ${esc(j.quantity)} OPEN${j.customerName ? ' \u00b7 ' + esc(j.customerName) : ''}${j.itemNumber ? ' \u00b7 ' + esc(j.itemNumber) : ''}</div>
+          <div class="row" style="gap:7px">
+            <span class="dot" style="background:${op.operationName ? AMBER : 'rgba(242,240,236,.35)'}"></span>
+            <span class="mono" style="font-size:10.5px;color:${op.operationName ? AMBER : 'rgba(242,240,236,.5)'}">${esc(op.operationName || 'open to load the routing')}</span>
+            <span class="mono" style="margin-left:auto;font-size:10px;color:rgba(242,240,236,.6)">${esc(op.workCenterName || '')}</span>
+          </div>
+        </button>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function jobView() {
+  const job = jobOf(S.jobId);
+  if (!job) return `<div class="scroll" style="padding:20px 14px"><div class="mono" style="font-size:12px;color:rgba(242,240,236,.6)">That job is no longer loaded.</div></div>`;
+  const cur = curOp(job) || {};
+  const mine = cur.operationId ? runOn(job.jobId, cur.operationId) : null;
+  return `
+  <div class="scroll" style="padding:14px 14px 18px;display:flex;flex-direction:column;gap:13px">
+    <button data-act="nav" data-arg="search" class="mono" style="display:flex;align-items:center;min-height:44px;font-size:11px;letter-spacing:.05em;color:rgba(242,240,236,.6)">&lsaquo; BACK</button>
+
+    <div style="display:flex;flex-direction:column;gap:7px">
+      <span class="label">JOB ${esc(jobNo(job))}</span>
+      <h1>${esc(job.jobName)}</h1>
+      <div class="mono" style="font-size:11px;line-height:1.6;color:rgba(242,240,236,.66)">
+        ${esc(job.customerName || '')}<br>${[
+          job.itemNumber ? esc(job.itemNumber) + (job.revision ? ' rev ' + esc(job.revision) : '') : '',
+          esc(job.quantityRemaining) + ' of ' + esc(job.quantity) + ' open',
+        ].filter(Boolean).join(' \u00b7 ')}
+      </div>
+    </div>
+
+    <div class="card" style="padding:13px 14px;display:flex;flex-direction:column;gap:10px;border-left:3px solid ${job.routingUnavailable && !S.routingLoading ? RED : AMBER}">
+      <span class="label">CURRENT STEP</span>
+      ${job.routingUnavailable ? (S.routingLoading ? `
+        <div class="mono" style="font-size:11.5px;line-height:1.5;color:rgba(242,240,236,.7)">Loading the routing…</div>`
+      : `
+        <div style="font:700 15px/1.2 'Barlow Semi Condensed',Helvetica,sans-serif;text-transform:uppercase;color:${RED}">ROUTING NOT AVAILABLE</div>
+        <div class="mono" style="font-size:10.5px;line-height:1.5;color:rgba(242,240,236,.7)">The server returned this job without its operations, so there is no step to start.</div>
+        <button class="btn-ghost" data-act="openJob" data-arg="${esc(job.jobId)}">RELOAD THE ROUTING</button>`)
+      : `
+        <div style="font:700 17px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;text-transform:uppercase">${esc(cur.operationName || '')}</div>
+        <div class="mono" style="font-size:10.5px;color:rgba(242,240,236,.66)">${[
+          esc(cur.workCenterName || ''),
+          cur.scheduledEquipmentName ? esc(cur.scheduledEquipmentName) : '',
+          cur.isOutsideProcessing ? 'outside processing \u00b7 at a vendor'
+            : needsEquipment(cur.workCenterName) ? 'pick a machine to start' : 'step level, no machine',
+        ].filter(Boolean).join(' \u00b7 ')}</div>
+        ${mine
+          ? `<button class="btn-ghost" data-act="openTimer" data-arg="${mine.timeEntryId}" style="border-color:rgba(46,212,122,.5);color:${GREEN}">YOU HAVE THIS OPEN \u00b7 GO TO IT</button>`
+          : `<button class="btn" data-act="openStart" data-arg="${esc(job.jobId)}">START THIS STEP</button>`}`}
+    </div>
+
+    ${job.routingUnavailable ? '' : `
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <span class="label">ROUTING \u00b7 ${(job.operations || []).length} STEPS</span>
+      ${(job.operations || []).map((o, i) => {
+        const state = i < job.currentOperationIndex ? 'done' : i === job.currentOperationIndex ? 'now' : 'next';
+        const ink = state === 'done' ? GREEN : state === 'now' ? AMBER : 'rgba(242,240,236,.68)';
+        return `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:9px;background:${state === 'now' ? 'rgba(245,165,36,.09)' : '#1b1a18'};border:1px solid ${state === 'now' ? 'rgba(245,165,36,.3)' : 'rgba(255,255,255,.07)'}">
+          <span class="mono" style="flex:none;width:18px;font-size:10px;color:${ink}">${String(i + 1).padStart(2, '0')}</span>
+          <span style="display:flex;flex-direction:column;gap:3px;min-width:0;flex:1">
+            <span style="font:600 12.5px/1.2 Helvetica,sans-serif;color:${state === 'next' ? 'rgba(242,240,236,.7)' : '#f2f0ec'}">${esc(o.operationName)}</span>
+            <span class="mono" style="font-size:10px;color:rgba(242,240,236,.6)">${[
+              esc(o.workCenterName || ''),
+              o.scheduledEquipmentName ? esc(o.scheduledEquipmentName) : '',
+              o.isOutsideProcessing ? 'outside processing'
+                : o.scheduledEquipmentName ? '' : (needsEquipment(o.workCenterName) ? 'machine picked at start' : 'step level'),
+            ].filter(Boolean).join(' \u00b7 ')}</span>
+          </span>
+          <span class="mono" style="flex:none;font-size:8.5px;font-weight:700;letter-spacing:.06em;color:${ink}">${state === 'done' ? 'DONE' : state === 'now' ? 'NOW' : ''}</span>
+        </div>`;
+      }).join('')}
+    </div>`}
+  </div>`;
+}
+
+function timerView() {
+  const t = timerOf(S.timerId);
+  if (!t) return runsView();
+  const job = jobOf(t.jobId);
+  const ink = t.isPaused ? AMBER : GREEN;
+  const secs = secondsOf(t);
+  const qty = job && job.quantity != null ? job.quantity : null;
+  return `
+  <div class="scroll" style="padding:14px 14px 18px;display:flex;flex-direction:column;gap:14px">
+    <button data-act="nav" data-arg="runs" class="mono" style="display:flex;align-items:center;min-height:44px;font-size:11px;letter-spacing:.05em;color:rgba(242,240,236,.6)">&lsaquo; ALL RUNS</button>
+
+    <div style="display:flex;flex-direction:column;gap:11px;align-items:center;padding:24px 16px;border-radius:14px;background:#1b1a18;border:1px solid ${t.isPaused ? 'rgba(245,165,36,.35)' : 'rgba(46,212,122,.3)'}">
+      <div class="row" style="gap:8px">
+        <span class="dot ${t.isPaused ? '' : 'running'}" style="background:${ink}"></span>
+        <span class="mono" style="font-size:10px;font-weight:700;letter-spacing:.09em;color:${ink}">${t.isPaused ? 'PAUSED \u00b7 ' + esc((t.pauseReason || '').toUpperCase()) : 'RUNNING \u00b7 ' + esc(String(t.entryType).toUpperCase())}</span>
+      </div>
+      <div class="mono" style="font-size:46px;font-weight:500;line-height:1;color:${ink}">${fmt(secs)}</div>
+      <span class="mono" style="font-size:10.5px;letter-spacing:.05em;color:rgba(242,240,236,.6)">${esc(t.equipmentId || (job && (curOp(job) || {}).workCenterName) || 'THIS STEP')}</span>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:5px">
+      <span style="font:700 21px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(timerJobName(t))}</span>
+      <span class="mono" style="font-size:11px;font-weight:700;color:rgba(242,240,236,.7)">Job ${esc(timerJobNo(t))}</span>
+      <span class="mono" style="font-size:10.5px;color:rgba(242,240,236,.66)">${esc(t.operationName)}${qty != null ? ' \u00b7 ' + job.quantityRemaining + ' of ' + qty + ' open' : ' \u00b7 piece count unavailable'}</span>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:9px">
+      <button class="btn" data-act="openComplete" data-arg="${t.timeEntryId}">COMPLETE \u00b7 POST PIECES</button>
+      <button class="btn-ghost" data-act="toggleTimer" data-arg="${t.timeEntryId}" style="color:${t.isPaused ? GREEN : '#f2f0ec'};border-color:${t.isPaused ? 'rgba(46,212,122,.5)' : 'rgba(255,255,255,.18)'}">${t.isPaused ? 'START AGAIN' : 'PAUSE'}</button>
+    </div>
+  </div>`;
+}
+
+function outboxView() {
+  const held = myOutbox();
+  return `
+  <div class="scroll" style="padding:14px 14px 18px;display:flex;flex-direction:column;gap:11px">
+    <div class="row">
+      <h2>Held writes</h2>
+      <span class="mono" style="margin-left:auto;font-size:10px;letter-spacing:.06em;color:${S.online ? GREEN : AMBER}">${S.online ? 'ONLINE' : 'NO SIGNAL'}</span>
+    </div>
+    <p class="mono" style="margin:0;font-size:11px;line-height:1.55;color:rgba(242,240,236,.66)">
+      Work recorded on this phone that Fulcrum has not accepted yet. It stays here until it posts \u2014 nothing is lost by walking out of signal.
+    </p>
+    ${held.length ? held.map((e) => `
+      <div class="card" style="padding:12px 13px;display:flex;flex-direction:column;gap:6px;border-left:3px solid ${AMBER}">
+        <div class="row">
+          <span class="mono" style="font-size:11.5px;font-weight:700;color:${AMBER}">${esc(e.label)}</span>
+          <span class="mono" style="margin-left:auto;font-size:9.5px;color:rgba(242,240,236,.6)">${new Date(e.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        </div>
+        <span class="mono" style="font-size:9.5px;line-height:1.5;color:rgba(242,240,236,.6)">${(e.replay || []).length} call${(e.replay || []).length === 1 ? '' : 's'} to replay${e.replay ? '' : ' \u00b7 cannot be replayed'}</span>
+      </div>`).join('')
+    : `<div class="mono" style="padding:24px 14px;text-align:center;font-size:12px;color:rgba(242,240,236,.6);border:1px dashed rgba(255,255,255,.16);border-radius:11px">
+         Nothing held. Everything you have recorded reached Fulcrum.
+       </div>`}
+    ${held.length ? `<button class="btn" data-act="retrySync" ${S.posting || !S.online ? 'disabled' : ''}>${S.posting ? 'POSTING\u2026' : S.online ? 'POST ALL NOW' : 'WAITING FOR SIGNAL'}</button>` : ''}
+  </div>`;
+}
+
+function startSheet() {
+  const job = jobOf(S.jobId);
+  if (!job) return '';
+  const op = curOp(job) || {};
+  const cnc = needsEquipment(op.workCenterName);
+  const picked = S.pickEquip;
+  const station = op.scheduledEquipmentName || null;
+  // The equipment master holds every work center, so the picker must scope itself to
+  // this operation's — otherwise shipping and packaging show up as spindles.
+  const pickable = equipment.filter((m) => m.wc === op.workCenterName);
+  // The routing sometimes DOES name a spindle ("DMU 50"). It is still not pre-selected —
+  // the floor assigns day-of — but it is marked, and the copy below only claims nothing
+  // is planned when that is true of this operation. Matched on the model string, because
+  // the routing names the machine, not our short code.
+  const stationKey = (station || '').trim().toLowerCase();
+  const plannedId = !stationKey ? null : (equipment.filter((m) =>
+    m.id.toLowerCase() === stationKey || (m.model || '').toLowerCase().indexOf(stationKey) > -1
+  )[0] || {}).id || null;
+  const inUse = S.timers.filter((t) => t.equipmentId && pickable.filter((m) => m.id === t.equipmentId).length).length;
+  const lightsOk = picked && (eqOf(picked) || {}).lightsOut;
+  const types = [['setup', 'SETUP'], ['run', 'RUN']].concat(lightsOk ? [['machine', 'MACHINE']] : []);
+  return `
+  <div class="sheet-wrap"><div class="sheet">
+    <div class="row">
+      <span class="label">START A STEP</span>
+      <span class="mono" style="margin-left:auto;font-size:10px;color:rgba(242,240,236,.6)">JOB ${esc(jobNo(job))}</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <div style="font:700 18px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;text-transform:uppercase">${esc(op.operationName || '')}</div>
+      <div class="mono" style="font-size:10.5px;color:rgba(242,240,236,.66)">${esc(job.jobName)}</div>
+    </div>
+
+    ${cnc ? `
+      <div class="row">
+        <span class="label">RUN ON WHICH MACHINE?</span>
+        <span class="mono" style="margin-left:auto;font-size:9.5px;color:rgba(242,240,236,.6)">${inUse} OF ${pickable.length} IN USE</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${pickable.map((m) => {
+          const sel = picked === m.id;
+          const planned = plannedId === m.id;
+          const busy = S.timers.filter((t) => t.equipmentId === m.id).length > 0;
+          return `
+          <button data-act="pickEquip" data-arg="${m.id}" style="display:flex;align-items:center;gap:11px;min-height:60px;padding:0 14px;border-radius:10px;
+            border:1px solid ${sel ? AMBER : planned ? 'rgba(143,180,255,.45)' : 'rgba(255,255,255,.12)'};background:${sel ? 'rgba(245,165,36,.14)' : '#131211'};text-align:left">
+            <span class="dot" style="background:${busy ? AMBER : GREEN}"></span>
+            <span style="display:flex;flex-direction:column;gap:3px;min-width:0;flex:1">
+              <span class="row" style="gap:6px">
+                <span class="mono" style="font-size:12.5px;font-weight:700;color:${sel ? AMBER : '#f2f0ec'}">${m.id}</span>
+                ${planned ? `<span class="mono" style="padding:2px 5px;border-radius:3px;background:rgba(143,180,255,.16);color:${BLUE};font-size:8px;font-weight:700;letter-spacing:.06em">PLANNED</span>` : ''}
+              </span>
+              <span class="mono" style="font-size:10px;color:rgba(242,240,236,.6)">${esc(m.model)}</span>
+            </span>
+            <span class="mono" style="flex:none;font-size:9.5px;font-weight:600;letter-spacing:.06em;color:${busy ? AMBER : 'rgba(242,240,236,.6)'}">${busy ? 'IN USE' : 'IDLE'}</span>
+          </button>`;
+        }).join('')}
+      </div>` : `
+      <div style="padding:13px 14px;border-radius:10px;background:#131211;border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;gap:11px">
+        <span class="dot" style="background:${AMBER}"></span>
+        <span style="display:flex;flex-direction:column;gap:3px;flex:1">
+          <span class="mono" style="font-size:12.5px;font-weight:700">${esc(station || op.workCenterName)}</span>
+          <span class="mono" style="font-size:10px;color:rgba(242,240,236,.6)">${station ? esc(op.workCenterName) + ' \u00b7 fixed station' : 'Work center only \u00b7 no equipment to pick'}</span>
+        </span>
+      </div>`}
+
+    ${cnc ? `
+      <span class="label">TIME TYPE</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${types.map(([v, l]) => `<button class="chip" data-act="pickType" data-arg="${v}" aria-pressed="${legalType(S.entryType, picked, cnc) === v}">${l}</button>`).join('')}
+      </div>` : ''}
+
+    <div class="mono" style="font-size:10.5px;line-height:1.45;color:rgba(242,240,236,.6)">
+      ${cnc
+        ? (picked
+            ? 'Fulcrum starts a real timer on this step as ' + legalType(S.entryType, picked, cnc) + ' time. The machine is recorded by this app \u2014 Fulcrum tracks the step, not the spindle.'
+            : (station
+                ? 'The routing plans ' + esc(station) + '. Tap the machine you are actually running \u2014 nothing is pre-selected, because the floor assigns the spindle day-of.'
+                : 'Tap the machine you are actually running. The routing does not plan a spindle, so nothing is pre-selected.'))
+        : 'Time books to the router step and work center as labor. No equipment to clock into.'}
+    </div>
+
+    <button class="btn" data-act="confirmStart" ${(cnc && !picked) || S.posting ? 'disabled' : ''}>${S.posting ? 'STARTING\u2026' : 'START THE CLOCK'}</button>
+    <button data-act="closeSheet" class="mono" style="min-height:48px;font-size:12px;font-weight:600;color:rgba(242,240,236,.6)">BACK</button>
+  </div></div>`;
+}
+
+function pauseSheet() {
+  const t = timerOf(S.timerId);
+  if (!t) return '';
+  return `
+  <div class="sheet-wrap"><div class="sheet">
+    <div class="row">
+      <span class="label">WHY ARE YOU STOPPING?</span>
+      <span class="mono" style="margin-left:auto;font-size:10px;color:rgba(242,240,236,.6)">${fmt(secondsOf(t))} ON THIS STEP</span>
+    </div>
+    ${PAUSE_GROUPS.map((g) => `
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <span class="label" style="color:${g.kind === 'break' ? BLUE : AMBER}">${g.title}</span>
+        <span class="mono" style="font-size:10px;line-height:1.5;color:rgba(242,240,236,.6)">${g.note}</span>
+        ${g.reasons.map((r) => `
+          <button class="btn-ghost" data-act="pauseWith" data-arg="${g.kind}|${esc(r)}" style="text-align:left;padding:0 14px;display:flex;align-items:center">${esc(r)}</button>`).join('')}
+      </div>`).join('')}
+    <button data-act="closeSheet" class="mono" style="min-height:48px;font-size:12px;font-weight:600;color:rgba(242,240,236,.6)">KEEP RUNNING</button>
+  </div></div>`;
+}
+
+function completeSheet() {
+  const t = timerOf(S.timerId);
+  const job = t && jobOf(t.jobId);
+  if (!t) return '';
+  if (!job) return `
+    <div class="sheet-wrap"><div class="sheet">
+      <span class="label">CANNOT POST YET</span>
+      <div class="mono" style="font-size:11.5px;line-height:1.55;color:rgba(242,240,236,.72)">
+        This run's job is not loaded, so the open piece count is unknown and a quantity cannot be posted safely.
+      </div>
+      <button class="btn" data-act="retry">RETRY LOADING JOBS</button>
+      <button data-act="closeSheet" class="mono" style="min-height:48px;font-size:12px;font-weight:600;color:rgba(242,240,236,.6)">BACK</button>
+    </div></div>`;
+  const open = job.quantityRemaining;
+  const qty = Number.isFinite(S.postQty) ? S.postQty : Math.min(1, open);
+  const scrap = Number.isFinite(S.postScrap) ? S.postScrap : 0;
+  const closes = qty >= open;
+  return `
+  <div class="sheet-wrap"><div class="sheet">
+    <div class="row">
+      <span class="label">HOW MANY GOOD PIECES?</span>
+      <span class="mono" style="margin-left:auto;font-size:10px;color:rgba(242,240,236,.6)">${open} OPEN</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <div style="font:700 17px/1.15 'Barlow Semi Condensed',Helvetica,sans-serif;text-transform:uppercase">${esc(t.operationName)}</div>
+      <div class="mono" style="font-size:10.5px;color:rgba(242,240,236,.66)">${esc(timerJobName(t))} \u00b7 ${fmt(secondsOf(t))}</div>
+    </div>
+    <div class="stepper">
+      <button data-act="bumpQty" data-arg="-1" aria-label="One fewer">&minus;</button>
+      <div style="flex:1;min-height:66px;border-radius:10px;background:#131211;border:1px solid rgba(255,255,255,.14);display:grid;place-items:center">
+        <span class="mono" style="font-size:30px;font-weight:500">${qty}</span>
+      </div>
+      <button data-act="bumpQty" data-arg="1" aria-label="One more">+</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="chip" data-act="setQty" data-arg="1" aria-pressed="${qty === 1}">1</button>
+      <button class="chip" data-act="setQty" data-arg="${Math.max(1, Math.round(open / 2))}" aria-pressed="${qty === Math.max(1, Math.round(open / 2))}">HALF</button>
+      <button class="chip" data-act="setQty" data-arg="${open}" aria-pressed="${qty === open}">ALL ${open}</button>
+    </div>
+
+    <div class="row">
+      <span class="label">SCRAP OR REWORK?</span>
+      <span class="mono" style="margin-left:auto;font-size:10px;color:rgba(242,240,236,.6)">${scrap ? scrap + ' BAD' : 'NONE'}</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="chip" data-act="setScrap" data-arg="0" aria-pressed="${scrap === 0}">NONE</button>
+      <button class="chip" data-act="bumpScrap" data-arg="1" aria-label="One more scrap">+1</button>
+      <button class="chip" data-act="bumpScrap" data-arg="-1" aria-label="One fewer scrap">&minus;1</button>
+      ${scrap ? `<span class="mono" style="display:flex;align-items:center;padding:0 10px;font-size:11px;font-weight:700;color:${RED}">${scrap}</span>` : ''}
+    </div>
+    <div style="padding:12px 13px;border-radius:9px;background:#131211;border:1px solid ${closes ? 'rgba(46,212,122,.35)' : 'rgba(255,255,255,.12)'}">
+      <span class="mono" style="font-size:10.5px;line-height:1.5;color:rgba(242,240,236,.72)">
+        ${closes
+          ? 'This closes the step at ' + open + ' pc' + (open === 1 ? '' : 's') + '. Fulcrum closes the operation, the job moves to the next step, and your timer stops.'
+          : 'Posts ' + qty + ' via add-quantity-completed and ' + (open - qty) + ' stay open. Your timer stops \u2014 start again any time, on any machine.'}
+      </span>
+    </div>
+    <button class="btn" data-act="confirmComplete" ${qty < 1 || S.posting ? 'disabled' : ''}>${S.posting ? 'POSTING\u2026' : (closes ? 'POST ' + qty + ' & CLOSE STEP' : 'POST ' + qty + ' & KEEP STEP OPEN')}</button>
+    <button data-act="closeSheet" class="mono" style="min-height:48px;font-size:12px;font-weight:600;color:rgba(242,240,236,.6)">BACK</button>
+  </div></div>`;
+}
+
+function header() {
+  const initials = S.user.name.replace(/[^A-Z]/g, '').slice(0, 2) || 'MO';
+  return `
+  <div style="flex:none;display:flex;align-items:center;gap:10px;padding:11px 14px;background:#1b1a18;border-bottom:1px solid rgba(255,255,255,.07)">
+    <button data-act="home" aria-label="Go to my home view" style="flex:none;margin-right:auto;display:flex;align-items:center;gap:10px;min-height:48px;max-width:70%;padding:0;text-align:left;background:none;border:0">
+      <div style="width:32px;height:32px;border-radius:8px;background:${AMBER};color:#131211;display:grid;place-items:center;font:700 12px/1 'JetBrains Mono',monospace;flex:none">${initials}</div>
+      <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+        <div class="row" style="gap:5px">
+          <span style="font:600 12.5px/1.1 Helvetica,sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(S.user.name)}</span>
+          <span class="mono" style="font-size:11px;color:rgba(242,240,236,.5)">&rsaquo;</span>
+        </div>
+        <div class="mono" style="font-size:9.5px;color:rgba(242,240,236,.68);letter-spacing:.04em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(String(S.user.role).toUpperCase())}${S.user.shift ? ' · ' + esc(String(S.user.shift).toUpperCase()) + ' SHIFT' : ''} · ${esc(BUILD)}</div>
+      </div>
+    </button>
+    ${canSeeBoard(S.user) ? `
+    <a href="./board.html" aria-label="Floor board" style="flex:none;display:flex;align-items:center;gap:7px;padding:0 12px;min-height:56px;border-radius:12px;
+      background:rgba(143,180,255,.1);border:1px solid rgba(143,180,255,.32);text-decoration:none">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${BLUE}" stroke-width="2" stroke-linecap="round">
+        <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>
+      </svg>
+      <span class="mono" style="font-size:9.5px;font-weight:600;letter-spacing:.06em;color:${BLUE}">BOARD</span>
+    </a>` : ''}
+    <button data-act="signOut" style="display:flex;align-items:center;gap:7px;padding:0 13px;min-height:56px;border-radius:12px;
+      background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16)">
+      <span class="mono" style="font-size:9.5px;font-weight:600;letter-spacing:.06em;color:rgba(242,240,236,.72)">SIGN OUT</span>
+    </button>
+  </div>`;
+}
+
+function banner() {
+  // A STACK, not a chain: these conditions co-occur constantly (going offline both
+  // holds writes and fails the job read), and an early return would starve whichever
+  // came second. Ordered by what the operator can act on.
+  const out = [];
+  const held = myOutbox();
+  if (!S.online || held.length) out.push(`
+    <button data-act="nav" data-arg="outbox" style="flex:none;display:flex;align-items:center;gap:9px;width:100%;padding:9px 14px;
+      background:rgba(245,165,36,.14);border-bottom:1px solid rgba(245,165,36,.3);text-align:left">
+      <span class="dot" style="background:${AMBER}"></span>
+      <span class="mono" style="flex:1;font-size:10px;letter-spacing:.05em;color:${AMBER}">${S.online ? 'BACK ONLINE' : 'NO SIGNAL'} · ${held.length} ENTR${held.length === 1 ? 'Y' : 'IES'} HELD</span>
+      <span class="mono" style="color:${AMBER}">&rsaquo;</span>
+    </button>`);
+  if (S.loadError) out.push(`
+    <button data-act="retry" style="flex:none;display:flex;align-items:center;gap:9px;width:100%;padding:9px 14px;
+      background:rgba(226,73,59,.16);border-bottom:1px solid rgba(226,73,59,.45);text-align:left">
+      <span class="dot" style="background:${RED}"></span>
+      <span class="mono" style="flex:1;font-size:10px;letter-spacing:.05em;color:${RED}">JOB DATA FAILED TO LOAD · ${esc(S.loadError.toUpperCase())} · SHOWING LAST KNOWN</span>
+      <span class="mono" style="color:${RED}">RETRY</span>
+    </button>`);
+  if (S.installable && !out.length) out.push(`
+    <button data-act="install" style="flex:none;display:flex;align-items:center;gap:9px;width:100%;padding:10px 14px;
+      background:rgba(143,180,255,.13);border-bottom:1px solid rgba(143,180,255,.3);text-align:left">
+      <span class="dot" style="background:${BLUE}"></span>
+      <span class="mono" style="flex:1;font-size:10px;letter-spacing:.05em;color:${BLUE}">ADD TO HOME SCREEN FOR FULL SCREEN + OFFLINE</span>
+      <span class="mono" style="color:${BLUE}">&rsaquo;</span>
+    </button>`);
+  return out.join('');
+}
+
+function navBar() {
+  const b = (screen, label, sub) =>
+    `<button data-act="nav" data-arg="${screen}" ${S.screen === screen ? 'aria-current="page"' : ''}>${label}<br>${sub}</button>`;
+  return `<nav>
+    ${b('runs', 'MY RUNS', S.timers.filter((t) => !t.isPaused).length + ' ACTIVE')}
+    ${b('search', 'SEARCH', 'JOBS')}
+    ${b('outbox', 'HELD', myOutbox().length + ' QUEUED')}
+    <a href="./plan.html" class="mono" style="display:grid;place-items:center;text-decoration:none">ON<br>DECK</a>
+    <button data-act="openScan" class="primary">SCAN A<br>TRAVELER</button>
+  </nav>`;
+}
+
+function render() {
+  try {
+    renderInner();
+  } catch (err) {
+    // One malformed job record must never leave an operator holding a blank phone.
+    console.error(err);
+    app.innerHTML = `<div style="padding:22px 16px;display:flex;flex-direction:column;gap:12px">
+      <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.07em;color:${RED}">THIS SCREEN FAILED TO DRAW</span>
+      <span class="mono" style="font-size:11.5px;line-height:1.5;color:rgba(242,240,236,.72)">${esc(String(err && err.message || err))}</span>
+      <button class="btn-ghost" data-act="nav" data-arg="runs">BACK TO MY RUNS</button>
+    </div>` + navBar();
+  }
+}
+
+function renderInner() {
+  if (!S.signedIn || !S.user) { app.innerHTML = lockView(); return; }
+  const body =
+    S.screen === 'search' ? searchView() :
+    S.screen === 'job' ? jobView() :
+    S.screen === 'timer' ? timerView() :
+    S.screen === 'outbox' ? outboxView() :
+    runsView();
+  const sheet =
+    S.sheet === 'start' ? startSheet() :
+    S.sheet === 'pause' ? pauseSheet() :
+    S.sheet === 'complete' ? completeSheet() : '';
+  app.innerHTML = header() + banner() + body + navBar() + sheet +
+    (S.toast ? `<div class="toast">${esc(S.toast)}</div>` : '');
+  if (S.screen === 'search') filterJobRows();
+}
+
+// --- platform ----------------------------------------------------------
+
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  set({ installable: true });
+});
+window.addEventListener('appinstalled', () => set({ installable: false }));
+
+window.addEventListener('online', () => {
+  set({ online: true });
+  const n = myOutbox().length;
+  if (n) flash('Back online · ' + n + ' held, tap the banner to post');
+});
+window.addEventListener('offline', () => set({ online: false }));
+
+// Keep the elapsed clocks moving without re-fetching.
+setInterval(() => { if (S.signedIn && (S.screen === 'runs' || S.screen === 'timer')) render(); }, 1000);
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+}
+
+const params = new URLSearchParams(location.search);
+// ?action= names a landing view. 'scan' opens the scanner over the search screen; the
+// rest are tab names. The board's links use these, so a supervisor can reach any
+// operator view in one tap.
+const ACTIONS = { scan: 'search', search: 'search', runs: 'runs', held: 'outbox', outbox: 'outbox' };
+const wanted = ACTIONS[params.get('action')];
+if (wanted) S.screen = wanted;
+// The board and the report pages have no sign-in state of their own, so they hand the
+// job back here rather than each clearing the session themselves.
+if (params.get('action') === 'signout') {
+  S.signedIn = false; S.user = null; S.timers = []; S.screen = 'runs';
+  S.signInMode = S.nfc ? 'badge' : 'name';
+  persist();                                     // the cleared session has to survive the next load
+}
+if (!S.nfc) S.signInMode = 'name';
+
+// Landing rule: board-authorized people start on the floor board, everyone else starts
+// in a scan. Role is only known after sign-in, so this cannot live in the manifest's
+// single start_url — it is decided here, once per launch.
+//
+// "?stay" is what keeps this from being a trap: the board's own link back, the Runs and
+// My-runs shortcuts, and any in-app navigation set it, so a supervisor who deliberately
+// opens the operator app is not bounced to the board. sessionStorage remembers that
+// choice for the rest of the session, so a reload does not undo it either.
+const STAY = 'shopfloor.stay';
+const asked = params.get('action');
+if (params.has('stay') || asked) { try { sessionStorage.setItem(STAY, '1'); } catch (e) {} }
+const staying = (() => { try { return sessionStorage.getItem(STAY) === '1'; } catch (e) { return false; } })();
+
+function landing() {
+  if (staying || !S.signedIn) return;
+  if (canSeeBoard(S.user)) { location.replace('./board.html'); return true; }
+  // Everyone else lands ready to scan a traveler.
+  S.screen = 'search';
+  setTimeout(() => actions.openScan(), 0);
+}
+const leaving = landing();
+
+render();
+// The manifest shortcut opens straight into a scan.
+if (params.get('action') === 'scan' && S.signedIn) setTimeout(() => actions.openScan(), 0);
+// The operator table backs name search, so it is needed before anyone can sign in.
+if (!leaving) {
+  api.operators()
+    .then((r) => set({ operators: r.items }))
+    .catch((e) => set({ loadError: e && e.status ? 'Server error ' + e.status : 'No connection' }));
+  if (S.signedIn) refresh();
+}
+if (isMock) console.info('Shop Floor running on mock data. Set MOCK = false in api.js when the server is live.');
+</script>
+</body>
+</html>
