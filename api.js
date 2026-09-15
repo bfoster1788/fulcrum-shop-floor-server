@@ -152,6 +152,15 @@ function normJob(j) {
 //
 // isCnc comes back false for every machine on the live read, so the split between
 // spindles and support stations is derived from the equipment description instead.
+// Real equipment codes at Impulse, from Brian's audit. Routing steps for non-CNC stations
+// frequently carry free text instead ("Post- Machining Work Bench", "Programming Office",
+// "9.Keyence XM") or nothing at all, and Cleaning has been seen scheduled against Assembly
+// Station 1 rather than U1. So a station code that is not on this list is not an attribution
+// we can report time against — the views mute it rather than charging the hours somewhere.
+const STATION_CODES = ['DB1','S1','PK','U1','PAS','QC1','QL','CMM1','CMM2','P1','SC1','L1'];
+export const isKnownStation = (code) =>
+  STATION_CODES.indexOf(String(code || '').trim().toUpperCase()) > -1;
+
 const CNC_RE = /\bcnc\b|mill|lathe|machining/i;
 
 function normFloor(d, equipment) {
@@ -180,12 +189,19 @@ function normFloor(d, equipment) {
     const state = m.status === 'running' ? 'running'
       : m.status === 'down' || m.status === 'paused' ? 'down'
       : 'idle';
+    const isCnc = m.isCnc || CNC_RE.test(m.description || '');
     return {
       equipmentId: m.name || m.equipmentId,
       name: m.name,
       model: (m.description || '').split(',')[0] || '',
       description: m.description || '',
-      isCnc: m.isCnc || CNC_RE.test(m.description || ''),
+      isCnc,
+      // The dashboard read leaves workCenterName off most rows; the equipment read is the
+      // fallback, and the description is what is left when neither carries it.
+      workCenterName: m.workCenterName || eq.workCenterName || '',
+      // CNC rows are attributed by the machine itself and are trustworthy. Everything else
+      // is only as good as the routing step's equipment assignment.
+      attributionOk: isCnc || isKnownStation(m.name || m.equipmentId),
       lightsOut: !!(eq.canRunUnattended),
       state,
       run: runs[0] || null,
@@ -199,13 +215,16 @@ function normFloor(d, equipment) {
     };
   });
 
+  // Staffing counts every open run, on a spindle or at a bench — the support stations are
+  // where deburr, passivation, packaging and shipping time lands, and a board that only
+  // counted CNC runs showed those operators as not working.
   const ops = {};
-  machines.concat([]).forEach((m) => m.runs.forEach((r) => {
+  machines.forEach((m) => m.runs.forEach((r) => {
     const key = r.operatorName || 'Unassigned';
     // running/paused are COUNTS on the board, not flags. role and shift are not in the
     // dashboard payload, so they read from the run rather than being invented.
     ops[key] = ops[key] || { name: key, runs: [], running: 0, paused: 0, role: 'on floor', shift: 'current' };
-    ops[key].runs.push({ ...r, equipmentId: m.equipmentId });
+    ops[key].runs.push({ ...r, equipmentId: m.equipmentId, isCnc: m.isCnc });
     if (r.isPaused) ops[key].paused++; else ops[key].running++;
   }));
 
@@ -335,13 +354,16 @@ export const api = {
 
   pausedRuns: () => Promise.resolve({ items: [] }),
 
-  addQuantity: ({ jobId, itemToMakeId, operationId, quantity, scrapQuantity }) =>
+  // userId and equipmentId are ours, not Fulcrum's — the same extra fields already sent on
+  // /timers/start. Without them the server's productionEvents log cannot attribute the pieces
+  // to an operator or a station, so goodQty and scrapQty read 0 on both report routes.
+  addQuantity: ({ jobId, itemToMakeId, operationId, quantity, scrapQuantity, userId, equipmentId }) =>
     post(`/jobs/${jobId}/items-to-make/${itemToMakeId}/operations/${operationId}/add-quantity-completed`,
-      { quantity, scrapQuantity }),
+      { quantity, scrapQuantity, userId, equipmentId }),
 
-  completeOperation: ({ jobId, itemToMakeId, operationId, quantity, scrapQuantity }) =>
+  completeOperation: ({ jobId, itemToMakeId, operationId, quantity, scrapQuantity, userId, equipmentId }) =>
     post(`/jobs/${jobId}/items-to-make/${itemToMakeId}/operations/${operationId}/complete`,
-      { quantity, scrapQuantity }),
+      { quantity, scrapQuantity, userId, equipmentId }),
 
   // Substring search over open jobs, server-side. Fulcrum has no free-text job search
   // upstream, so the server does the matching.
@@ -545,6 +567,39 @@ async function mock(path, body) {
     return { ok: true };
   }
 
+  if (path === '/reports/labor') {
+    return {
+      date: new Date().toISOString().slice(0, 10),
+      generatedUtc: new Date().toISOString(),
+      shiftSeconds: 25200,
+      operators: [
+        { userId: 'usr-4471', name: 'M. Ortega', role: 'Machinist', runSeconds: 15900, setupSeconds: 3400, standardSeconds: 17600, goodQty: 41, scrapQty: 2, jobs: 3 },
+        { userId: 'usr-4472', name: 'D. Whitfield', role: 'Machinist', runSeconds: 13200, setupSeconds: 5100, standardSeconds: 12400, goodQty: 28, scrapQty: 0, jobs: 2 },
+        { userId: 'usr-4473', name: 'R. Salcedo', role: 'Deburr', runSeconds: 17400, setupSeconds: 0, standardSeconds: null, goodQty: 96, scrapQty: 3, jobs: 4 },
+        { userId: 'usr-4474', name: 'T. Nakamura', role: 'Quality', runSeconds: 9800, setupSeconds: 1200, standardSeconds: 9000, goodQty: 0, scrapQty: 0, jobs: 2 },
+      ],
+    };
+  }
+  if (path === '/reports/equipment') {
+    const day = 86400;
+    const mk = (equipmentId, name, description, isCnc, run, setup, std, good, scrap) =>
+      ({ equipmentId, name, description, isCnc, runSeconds: run, setupSeconds: setup, standardSeconds: std, goodQty: good, scrapQty: scrap });
+    return {
+      date: new Date().toISOString().slice(0, 10),
+      generatedUtc: new Date().toISOString(),
+      calendarSeconds: day,
+      machines: [
+        mk('M1', 'M1', 'DMG Mori DMU 50, 5-axis', true, 33000, 5400, 31000, 88, 1),
+        mk('M2', 'M2', 'Haas VF-2SS, 3-axis', true, 26400, 7200, 22000, 54, 4),
+        mk('M3', 'M3', 'Mazak QTN 250, turning', true, 41000, 3600, 39500, 120, 2),
+        mk('L2', 'L2', 'Okuma Genos L250, turning', true, 12000, 2400, 11200, 33, 0),
+        mk('DB1', 'DB1', 'Deburr bench', false, 16800, 0, null, 96, 3),
+        mk('U1', 'U1', 'Ultrasonic cleaning', false, 7200, 0, null, 74, 0),
+        mk('CMM1', 'CMM1', 'Zeiss Contura CMM', false, 10800, 1800, 9600, 61, 2),
+        mk('S1', 'S1', 'Shipping', false, 5400, 0, null, 0, 0),
+      ],
+    };
+  }
   if (path === '/job-tracking-timers/start') {
     const job = JOBS.filter((j) => j.jobId === body.jobId)[0];
     const op = job.operations.filter((o) => o.operationId === body.operationId)[0];

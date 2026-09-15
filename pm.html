@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#131211">
-<title>Project management — Fulcrum Shop Floor</title>
+<title>Project Management — Fulcrum Shop Floor</title>
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -66,6 +66,9 @@ let JOBS = undefined;
 let MATERIAL = undefined;      // /api/materials/backlog — null when the route is absent
 let ONTIME = undefined;        // /api/reports/on-time  — null when the route is absent
 let SCHED = { state: 'idle', ops: [], done: 0, total: 0 };
+// The four review sections are agenda items, not a dump: headings and their scope are always
+// visible, the listings underneath only build for the section actually being reviewed.
+let OPEN = null;
 
 const day = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d.getTime()) ? d : null; };
 const midnight = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
@@ -110,6 +113,22 @@ const awaiting = (what, route, why) => `
     <span class="mono" style="font-size:10px;line-height:1.6;color:rgba(242,240,236,.55)">Response shape is specified in REPORTS-API.md.</span>
   </div>`;
 
+// Header is the control: title, one line of scope, and a right-hand hint of what opening costs.
+const section = (id, n, title, desc, hint, body) => {
+  const on = OPEN === id;
+  return `
+  <div style="display:flex;flex-direction:column;gap:11px">
+    <button data-sect="${id}" style="display:flex;flex-direction:column;gap:7px;width:100%;text-align:left;padding:0 0 10px;border-bottom:1px solid ${on ? 'rgba(245,165,36,.45)' : 'rgba(255,255,255,.12)'}">
+      <span style="display:flex;align-items:baseline;gap:10px;width:100%">
+        <span class="sect" style="padding:0;border:none;flex:1;min-width:0"><span>${n}</span> · ${title}</span>
+        <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.07em;color:${on ? AMBER : 'rgba(242,240,236,.55)'};white-space:nowrap">${on ? 'CLOSE –' : 'OPEN +'}</span>
+      </span>
+      <span class="mono" style="font-size:10.5px;line-height:1.6;color:rgba(242,240,236,.62);max-width:82ch">${desc}${hint ? ` <span style="color:rgba(242,240,236,.42)">${hint}</span>` : ''}</span>
+    </button>
+    ${on ? body() : ''}
+  </div>`;
+};
+
 const pct = (n) => (n == null ? '—' : Math.round(n) + '%');
 const otd = (o) => (o && o.total ? (o.onTime / o.total) * 100 : null);
 const otdInk = (n) => (n == null ? 'rgba(242,240,236,.5)' : n >= 95 ? GREEN : n >= 85 ? AMBER : RED);
@@ -138,10 +157,7 @@ async function loadSchedule() {
 
 function ospView() {
   if (SCHED.state === 'idle') {
-    return `<div class="card" style="padding:13px 12px;display:flex;flex-direction:column;gap:9px">
-      <span class="note">Outside-processing steps are read from each job's routing — ${Array.isArray(JOBS) ? JOBS.length : 0} requests — so this loads on request.</span>
-      <button data-load="1" class="mono" style="min-height:48px;border-radius:9px;background:rgba(245,165,36,.13);border:1px solid rgba(245,165,36,.4);color:${AMBER};font-size:11px;font-weight:700;letter-spacing:.05em">LOAD OUTSIDE PROCESSING</button>
-    </div>`;
+    return `<div class="card" style="padding:13px 12px"><span class="note">Starting routing reads…</span></div>`;
   }
   if (SCHED.state === 'loading') {
     return `<div class="card" style="padding:11px 12px"><span class="note">Reading routings… ${SCHED.done} of ${SCHED.total} jobs.</span></div>`;
@@ -266,13 +282,13 @@ function deliveryView() {
 const gate = (u) => `
   <div class="wrap" style="display:flex;flex-direction:column;gap:14px;max-width:560px;padding-top:12vh">
     <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.09em;color:${AMBER}">IMPULSE PRECISION · PROJECT MANAGEMENT</span>
-    <h1 style="font-size:26px">${u ? 'Not your view' : 'Sign in first'}</h1>
+    <h1 style="font-size:26px">${u ? 'Not your view' : 'Sign In First'}</h1>
     <p class="mono" style="margin:0;font-size:12px;line-height:1.65;color:rgba(242,240,236,.7)">
       ${u
-        ? esc(u.name) + ' is signed in as ' + esc(String(u.role)) + '. Material backlog, purchase orders and customer delivery are for supervisors, quality managers and administrators. What is on deck at your station is on the On deck page, open to everyone.'
+        ? esc(u.name) + ' is signed in as ' + esc(String(u.role)) + '. Material backlog, purchase orders and customer delivery are for supervisors, quality managers and administrators. What is on deck at your station is on the On Deck page, open to everyone.'
         : 'This page follows the operator app’s sign-in. Sign in on this device, then come back.'}
     </p>
-    <a class="mono" href="./plan.html" style="font-size:11px;letter-spacing:.05em;text-decoration:none">On deck &rarr;</a>
+    <a class="mono" href="./plan.html" style="font-size:11px;letter-spacing:.05em;text-decoration:none">On Deck &rarr;</a>
     <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
   </div>`;
 
@@ -280,32 +296,52 @@ function render() {
   const u = sessionUser();
   if (!mayView(u)) { el.innerHTML = gate(u); return; }
 
-  const inbound = ONTIME && ONTIME.inbound ? otd(ONTIME.inbound) : null;
-  const outbound = ONTIME && ONTIME.outbound ? otd(ONTIME.outbound) : null;
-  const lateMat = MATERIAL && Array.isArray(MATERIAL.late) ? MATERIAL.late.length : null;
+  // Every tile on this row computes from data the page already holds, so none of them can
+  // render blank: the counts the backend routes would sharpen are shown as the best available
+  // measure now, with the sub-line stating what that measure is.
+  //
+  // Three states, never two. A zero painted green before the read lands — or after it fails —
+  // asserts a clean shop this page has no basis for, which is worse than a blank.
+  const jobsState = JOBS === undefined ? 'pending' : JOBS === null ? 'failed' : 'ready';
+  const jobs = Array.isArray(JOBS) ? JOBS : [];
+  // Wraps a computed tile so it only speaks once there is a read behind it.
+  const jkpi = (label, value, sub, ink) => jobsState === 'ready'
+    ? kpi(label, value, sub, ink)
+    : kpi(label, '\u2026', jobsState === 'pending' ? 'reading open jobs' : 'job read failed — reload', 'rgba(242,240,236,.5)');
+  const jobsRisk = jobs.filter((j) => { const n = dayDiff(j.scheduledEndUtc); return n != null && n > 0; });
+  const dueSoon = jobs.filter((j) => { const n = dayDiff(j.scheduledEndUtc); return n != null && n <= 0 && n >= -7; });
+  const atRiskCustomers = Object.keys(jobsRisk.reduce((a, j) => { a[j.customerName || 'No customer'] = 1; return a; }, {}));
+
+  // Material risk, until /api/materials/backlog lands: open jobs that should have started and
+  // have nothing made against them. Not the same claim as "material is missing" — it is the
+  // symptom that shows up on the floor when it is, and the sub-line says which it is measuring.
+  const started = (j) => Number(j.quantity || 0) > 0 && Number(j.quantityRemaining) < Number(j.quantity);
+  const stalled = jobs.filter((j) => { const n = dayDiff(j.scheduledStartUtc); return n != null && n > 0 && !started(j); });
   const missingMat = MATERIAL && Array.isArray(MATERIAL.missing) ? MATERIAL.missing.length : null;
-  const lateDeliveries = Array.isArray(JOBS)
-    ? JOBS.filter((j) => { const n = dayDiff(j.scheduledEndUtc); return n != null && n > 0; }).length
-    : null;
-  // A count of zero is only honest when dates exist to judge. With no dated steps the
-  // answer is "not measurable", which reads as —, not 0.
-  const ospDated = SCHED.state === 'ready'
-    ? SCHED.ops.filter((o) => dayDiff(o.scheduledEndUtc) != null)
-    : null;
-  const ospLate = ospDated && ospDated.length
-    ? ospDated.filter((o) => dayDiff(o.scheduledEndUtc) > 0).length
-    : null;
+  const lateMat = MATERIAL && Array.isArray(MATERIAL.late) ? MATERIAL.late.length : null;
+  const matRisk = missingMat != null ? missingMat + (lateMat || 0) : stalled.length;
+  const matSub = missingMat != null
+    ? missingMat + ' with no PO line · ' + (lateMat || 0) + ' past expected'
+    : jobs.some((j) => j.scheduledStartUtc)
+      ? 'past scheduled start, nothing made'
+      : 'no scheduled start dates on the job set';
+
+  // Outside processing loads in the background on every visit, so this tile fills itself.
+  const ospDated = SCHED.ops.filter((o) => dayDiff(o.scheduledEndUtc) != null);
+  const ospLateDated = ospDated.filter((o) => dayDiff(o.scheduledEndUtc) > 0).length;
+  const ospReady = SCHED.state === 'ready';
+  const ospRisk = ospDated.length ? ospLateDated : SCHED.ops.length;
   const ospSub = SCHED.state !== 'ready'
-    ? 'load outside processing'
+    ? 'reading routings · ' + SCHED.done + ' of ' + SCHED.total + ' jobs'
     : !SCHED.ops.length
       ? 'no open outside steps'
       : ospDated.length
-        ? 'of ' + ospDated.length + ' dated steps'
-        : SCHED.ops.length + ' steps, no return dates';
+        ? ospLateDated + ' of ' + ospDated.length + ' dated steps past return'
+        : 'open steps, no return date to judge them on';
 
   el.innerHTML = `
   <div class="bar">
-    <h1>Project management</h1>
+    <h1>Project Management</h1>
     <span class="mono" style="padding:4px 9px;border-radius:5px;background:rgba(143,180,255,.14);color:${BLUE};font-size:10px;font-weight:700;letter-spacing:.07em">BACKLOG REVIEW</span>
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
       <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.6)">${esc(u.name)}</span>
@@ -315,55 +351,59 @@ function render() {
     </div>
   </div>
   <div class="navrow">
-    ${link('./board.html', 'Floor board')}
+    ${link('./board.html', 'Floor Board')}
+    ${link('./board.html#machining', 'Machining')}
+    ${link('./board.html#production', 'Production')}
+    ${link('./board.html#people', 'People')}
     ${link('./reports.html', 'Reports · OLE + OEE')}
-    ${link('./plan.html', 'On deck')}
-    ${link('./plan.html#late', 'Late jobs')}
-    ${link('./index.html?stay=1&action=search', 'Search jobs')}
+    ${link('./plan.html', 'On Deck')}
+    ${link('./plan.html#late', 'Late Jobs')}
+    ${link('./index.html?stay=1&action=search', 'Search Jobs')}
   </div>
 
   <div class="wrap" style="display:flex;flex-direction:column;gap:24px">
     <div class="kpis">
-      ${kpi('ON-TIME INBOUND', pct(inbound), inbound == null ? 'needs /api/reports/on-time' : ONTIME.inbound.onTime + ' of ' + ONTIME.inbound.total + ' receipts', otdInk(inbound))}
-      ${kpi('ON-TIME OUTBOUND', pct(outbound), outbound == null ? 'needs /api/reports/on-time' : ONTIME.outbound.onTime + ' of ' + ONTIME.outbound.total + ' shipments', otdInk(outbound))}
-      ${kpi('LATE INBOUND MATERIAL', lateMat == null ? '—' : String(lateMat), lateMat == null ? 'needs /api/materials/backlog' : 'purchase-order lines past promise', lateMat ? RED : null)}
-      ${kpi('MISSING MATERIAL', missingMat == null ? '—' : String(missingMat), missingMat == null ? 'needs /api/materials/backlog' : 'open jobs with no PO line', missingMat ? RED : null)}
-      ${kpi('OSP PAST RETURN', ospLate == null ? '\u2014' : String(ospLate), ospSub, ospLate ? RED : null)}
-      ${kpi('JOBS PAST FINISH', lateDeliveries == null ? '—' : String(lateDeliveries), 'of ' + (Array.isArray(JOBS) ? JOBS.length : 0) + ' open jobs', lateDeliveries ? RED : null)}
+      ${jkpi('OPEN JOBS', String(jobs.length), 'in progress and scheduled')}
+      ${jkpi('JOBS RISK', String(jobsRisk.length), 'past scheduled finish', jobsRisk.length ? RED : GREEN)}
+      ${jkpi('DUE IN 7 DAYS', String(dueSoon.length), 'scheduled to finish this week', dueSoon.length ? AMBER : null)}
+      ${jkpi('MATERIAL RISK', String(matRisk), matSub, matRisk ? RED : GREEN)}
+      ${jobsState !== 'ready' || !ospReady
+        ? kpi('OSP RISK', '\u2026', jobsState !== 'ready' ? 'waiting on the job read' : ospSub, 'rgba(242,240,236,.5)')
+        : kpi('OSP RISK', String(ospRisk), ospSub, ospRisk ? RED : GREEN)}
+      ${jkpi('CUSTOMERS AFFECTED', String(atRiskCustomers.length), 'with at least one late job', atRiskCustomers.length ? AMBER : GREEN)}
     </div>
 
-    <div style="display:flex;flex-direction:column;gap:11px">
-      <h2 class="sect"><span>1</span> · Material backlog</h2>
-      ${MATERIAL
-        ? `<span class="note">Material backlog data received — rendering is wired to the shape in REPORTS-API.md.</span>`
-        : awaiting('Inbound material and missing material', '/api/materials/backlog',
-            'Nothing in this server reaches purchase orders, material allocation or receipts today — fulcrumClient.js covers jobs, items, sales orders, customers, equipment, timers and routing only. This route carries the purchase-order expected date, which is the date both material and outside-processing status should be judged on, plus vendor, ordered against received quantity, and the open jobs with no purchase-order line at all.')}
-    </div>
+    ${section('material', 1, 'Material Backlog', 'Purchase-order lines running past their expected date, and open jobs with no material ordered against them.', 'Reads /api/materials/backlog.', () => MATERIAL
+      ? `<span class="note">Material backlog data received — rendering is wired to the shape in REPORTS-API.md.</span>`
+      : awaiting('Inbound material and missing material', '/api/materials/backlog',
+          'Nothing in this server reaches purchase orders, material allocation or receipts today — fulcrumClient.js covers jobs, items, sales orders, customers, equipment, timers and routing only. This route carries the purchase-order expected date, which is the date both material and outside-processing status should be judged on, plus vendor, ordered against received quantity, and the open jobs with no purchase-order line at all.'))}
 
-    <div style="display:flex;flex-direction:column;gap:11px">
-      <h2 class="sect"><span>2</span> · Outside processing</h2>
-      ${ospView()}
-    </div>
+    ${section('osp', 2, 'Outside Processing', 'Open outside steps on every job, against the return date the routing plans for them.', `One routing request per job — ${Array.isArray(JOBS) ? JOBS.length : 0} in the current set.`, ospView)}
 
-    <div style="display:flex;flex-direction:column;gap:11px">
-      <h2 class="sect"><span>3</span> · Customer delivery · late and next 7 days</h2>
-      ${deliveryView()}
-    </div>
+    ${section('delivery', 3, 'Customer Delivery', 'Jobs past their scheduled finish, plus everything due inside the next seven days, grouped by customer.', 'From the job read already on this page.', deliveryView)}
 
-    <div style="display:flex;flex-direction:column;gap:11px">
-      <h2 class="sect"><span>4</span> · On-time performance</h2>
-      ${ONTIME
-        ? `<span class="note">On-time data received — rendering is wired to the shape in REPORTS-API.md.</span>`
-        : awaiting('On-time shipment and delivery', '/api/reports/on-time',
-            'Inbound needs receipt date against promised date per purchase-order line. Outbound needs ship or completion date against scheduled finish — and the current job read returns only inProgress and scheduled jobs, so completed history is not reachable yet either.')}
-    </div>
+    ${section('ontime', 4, 'On-Time Performance', 'Receipts against promised dates inbound, shipments against scheduled finish outbound.', 'Reads /api/reports/on-time.', () => ONTIME
+      ? `<div class="kpis">
+          ${kpi('ON-TIME INBOUND', pct(otd(ONTIME.inbound)), ONTIME.inbound.onTime + ' of ' + ONTIME.inbound.total + ' receipts', otdInk(otd(ONTIME.inbound)))}
+          ${kpi('ON-TIME OUTBOUND', pct(otd(ONTIME.outbound)), ONTIME.outbound.onTime + ' of ' + ONTIME.outbound.total + ' shipments', otdInk(otd(ONTIME.outbound)))}
+        </div>`
+      : awaiting('On-time shipment and delivery', '/api/reports/on-time',
+          'Inbound needs receipt date against promised date per purchase-order line. Outbound needs ship or completion date against scheduled finish — and the current job read returns only inProgress and scheduled jobs, so completed history is not reachable yet either.'))}
 
     <a class="mono" href="./index.html?stay=1" style="font-size:11px;letter-spacing:.05em;text-decoration:none">&larr; Operator app</a>
   </div>`;
 }
 
 el.addEventListener('click', (e) => {
-  if (e.target.closest('[data-load]')) loadSchedule();
+  if (e.target.closest('[data-load]')) { loadSchedule(); return; }
+  const s = e.target.closest('[data-sect]');
+  if (s) {
+    const id = s.getAttribute('data-sect');
+    OPEN = OPEN === id ? null : id;
+    render();
+    // Opening outside processing is the request to fetch it; no second button press.
+    if (OPEN === 'osp' && SCHED.state === 'idle') loadSchedule();
+  }
 });
 
 async function load() {
@@ -378,6 +418,9 @@ async function load() {
   MATERIAL = material || null;
   ONTIME = ontime || null;
   render();
+  // The OSP tile has to read on arrival rather than on request — a management page that shows
+  // a dash until someone presses something is a page that gets read wrong.
+  loadSchedule();
 }
 
 load();

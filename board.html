@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#131211">
-<title>Floor board — Fulcrum</title>
+<title>Floor Board — Fulcrum</title>
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -46,7 +46,7 @@
 <div id="board"></div>
 
 <script type="module">
-import { api } from './api.js';
+import { api, isKnownStation } from './api.js';
 
 const GREEN = '#2ed47a', AMBER = '#f5a524', RED = '#ff8a7d', BLUE = '#8fb4ff', DIM = 'rgba(242,240,236,.66)';
 const el = document.getElementById('board');
@@ -61,6 +61,44 @@ const hhmm = (sec) => {
 };
 
 let F = null;
+// The two report routes now exist. They are a separate, slower read than the live dashboard
+// (they aggregate completed timers for the day), so they load alongside and the views degrade
+// to availability-only until they land.
+let R = { labor: undefined, equipment: undefined };
+const todayIso = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+const norm = (s) => String(s || '').trim().toLowerCase();
+const equipRow = (id) => (R.equipment && Array.isArray(R.equipment.machines)
+  ? R.equipment.machines.filter((m) => norm(m.equipmentId) === norm(id) || norm(m.name) === norm(id))[0] || null : null);
+const laborRow = (o) => (R.labor && Array.isArray(R.labor.operators)
+  ? R.labor.operators.filter((x) => norm(x.userId) === norm(o.userId) || norm(x.name) === norm(o.name))[0] || null : null);
+
+// A factor is null when its inputs are missing, and null propagates: an OEE with a guessed
+// quality factor is worse than an OEE that says it cannot be computed yet.
+const ratio = (num, den) => (num == null || !den ? null : num / den);
+const product = (list) => (list.some((v) => v == null) ? null : list.reduce((a, v) => a * v, 1));
+function factors(r, availableSeconds) {
+  if (!r) return { availability: null, performance: null, quality: null, score: null };
+  const busy = (r.runSeconds || 0) + (r.setupSeconds || 0);
+  const made = (r.goodQty || 0) + (r.scrapQty || 0);
+  const availability = ratio(busy, availableSeconds);
+  const performance = ratio(r.standardSeconds, r.runSeconds);
+  const quality = r.goodQty == null || !made ? null : r.goodQty / made;
+  return { availability, performance, quality, score: product([availability, performance, quality]) };
+}
+const fpct = (n) => (n == null ? '\u2026' : Math.round(n * 100) + '%');
+const fink = (n) => (n == null ? 'rgba(242,240,236,.4)' : n >= 0.7 ? GREEN : n >= 0.4 ? AMBER : RED);
+const h1 = (sec) => (sec == null ? '\u2014' : (Math.round((sec / 3600) * 10) / 10) + 'h');
+// Roll a set of rows up into one score for the header tile.
+const rollup = (rows, avail) => {
+  if (!rows || !rows.length || !avail) return null;
+  const s = (k) => rows.reduce((t, r) => t + (r[k] || 0), 0);
+  const anyStd = rows.some((r) => r.standardSeconds != null);
+  return factors({
+    runSeconds: s('runSeconds'), setupSeconds: s('setupSeconds'),
+    standardSeconds: anyStd ? s('standardSeconds') : null,
+    goodQty: s('goodQty'), scrapQty: s('scrapQty'),
+  }, avail * rows.length).score;
+};
 
 // The board reads the SAME session the operator app writes, so who you are signed in as
 // on this device decides whether the board opens. Same role list as index.html — keep
@@ -83,7 +121,7 @@ function gateView(u) {
   return `
   <div class="wrap" style="display:flex;flex-direction:column;gap:14px;max-width:560px;padding-top:12vh">
     <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.09em;color:${AMBER}">IMPULSE PRECISION \u00b7 FLOOR BOARD</span>
-    <h1>${signedIn ? 'Not your view' : 'Sign in first'}</h1>
+    <h1>${signedIn ? 'Not your view' : 'Sign In First'}</h1>
     <p class="mono" style="margin:0;font-size:12px;line-height:1.65;color:rgba(242,240,236,.7)">
       ${signedIn
         ? esc(u.name) + ' is signed in as ' + esc(String(u.role)) + '. The floor board is for supervisors, quality managers and administrators. Your runs, times and pauses are all in the operator app.'
@@ -95,6 +133,28 @@ function gateView(u) {
 
 const INK = { running: GREEN, down: RED, idle: DIM };
 const LABEL = { running: 'RUNNING', down: 'DOWN', idle: 'IDLE' };
+
+// One payload, three readings of it. The floor board is the whole shop; Machining is the
+// spindles alone (where utilization and spindle time mean something); Production is every
+// non-machining station — deburr, passivation, cleaning, packaging, shipping — where the
+// only honest measure is step time booked, not spindle percentage.
+const VIEWS = { floor: 'Floor Board', machining: 'Machining', production: 'Production', people: 'People' };
+const VIEW_KEY = 'shopfloor.board.view';
+function startView() {
+  const h = (location.hash || '').replace('#', '');
+  if (VIEWS[h]) return h;
+  try { const v = localStorage.getItem(VIEW_KEY); if (VIEWS[v]) return v; } catch (e) {}
+  return 'floor';
+}
+let VIEW = startView();
+const setView = (v) => {
+  if (!VIEWS[v] || v === VIEW) return;
+  VIEW = v;
+  try { localStorage.setItem(VIEW_KEY, v); } catch (e) {}
+  if (location.hash.replace('#', '') !== v) history.replaceState(null, '', '#' + v);
+  render();
+};
+window.addEventListener('hashchange', () => setView(startView()));
 
 // Two numbers, both over the same 7 scheduled hours per weekday, both from the server so
 // the board can never disagree with it:
@@ -116,9 +176,13 @@ function asOfLabel(v) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function machineCard(m) {
+function machineCard(m, withOee) {
   const ink = INK[m.state];
   const util = utilPct(m), spindle = spindlePct(m);
+  // Spindle time is a CNC question. A deburr bench booking two hours of step time has no
+  // spindle number. The value itself can legitimately be null on a CNC (the server only
+  // computes it for one work-center name), so the gate is the machine, not the number.
+  const hasSpindle = !!m.isCnc;
   // Bars scale to the booked total once it passes the scheduled day, so an over-100%
   // machine still reads as proportions rather than three clipped segments.
   const booked = m.cuttingHours + m.setupHours + m.downHours;
@@ -168,15 +232,27 @@ function machineCard(m) {
           <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:8px;background:#131211">
             <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.07em;color:rgba(242,240,236,.62)">UTILIZATION</span>
             <span class="mono" style="font-size:19px;font-weight:700;line-height:1;color:${inkFor(util)}">${show(util)}%</span>
-            <span class="mono" style="font-size:8.5px;color:rgba(242,240,236,.55)">cut + setup</span>
+            <span class="mono" style="font-size:8.5px;color:rgba(242,240,236,.55)">${hasSpindle ? 'cut + setup' : 'step time booked'}</span>
           </div>
+          ${hasSpindle ? `
           <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:8px;background:#131211;border:1px solid rgba(46,212,122,.22)">
             <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.07em;color:rgba(242,240,236,.62)">SPINDLE</span>
             <span class="mono" style="font-size:19px;font-weight:700;line-height:1;color:${inkFor(spindle)}">${show(spindle)}%</span>
             <span class="mono" style="font-size:8.5px;color:rgba(242,240,236,.55)">cutting only</span>
-          </div>
+          </div>` : `
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:8px;background:#131211">
+            <span class="mono" style="font-size:8.5px;font-weight:600;letter-spacing:.07em;color:rgba(242,240,236,.62)">WORK CENTER</span>
+            <span class="mono" style="font-size:11px;font-weight:700;line-height:1.3;color:rgba(242,240,236,.9);overflow-wrap:anywhere">${esc(m.workCenterName || m.model || m.description || 'not named')}</span>
+            <span class="mono" style="font-size:8.5px;color:rgba(242,240,236,.55)">no spindle to measure</span>
+          </div>`}
         </div>
       </div>
+      ${withOee
+        ? (m.attributionOk === false
+            ? unattributed(m)
+            : factorStrip(equipRow(m.equipmentId), R.equipment && R.equipment.calendarSeconds,
+                'OEE \u00b7 EQUIPMENT EFFECTIVENESS', '/api/reports/equipment', R.equipment === undefined))
+        : ''}
     </div>
   </div>`;
 }
@@ -199,36 +275,117 @@ function staffRow(o) {
   </div>`;
 }
 
-function alerts() {
+// Alerts read whatever scope the current view is looking at, so Machining never reports a
+// held deburr bench and Production never reports a spindle down.
+function alerts(list, kind) {
   const out = [];
-  F.machines.filter((m) => m.state === 'down').forEach((m) => {
-    out.push({ kind: 'bad', tag: m.equipmentId + ' DOWN', text: (m.run && m.run.pauseReason ? m.run.pauseReason + ' on ' : '') + 'Job ' + (m.run ? m.run.jobId : '') + '. Cutting stopped.' });
+  list.filter((m) => m.state === 'down').forEach((m) => {
+    const r = m.run;
+    out.push({
+      kind: kind === 'production' ? 'warn' : 'bad',
+      tag: m.equipmentId + (kind === 'production' ? ' HELD' : ' DOWN'),
+      text: (r && r.pauseReason ? r.pauseReason + ' on ' : '') + 'Job ' + (r ? r.jobId : '—') +
+            (r && r.operationName ? ' · ' + r.operationName : '') + '.',
+    });
   });
 
-  const stepPaused = F.support.filter((c) => c.state === 'down');
-  stepPaused.forEach((c) => {
-    out.push({ kind: 'warn', tag: c.equipmentId + ' PAUSED', text: 'Job ' + c.run.jobId + ' · ' + c.run.operationName + ' held by ' + c.run.operatorName + '.' });
-  });
-
-  // Idle machines roll into one line. Seven near-identical cards buried the one real
-  // signal, and "which spindles are free" reads better as a list than as a stack.
-  const idle = F.machines.filter((m) => m.state === 'idle');
+  // Idle stations roll into one line. Seven near-identical cards buried the one real
+  // signal, and "which are free" reads better as a list than as a stack.
+  const idle = list.filter((m) => m.state === 'idle');
   if (idle.length) {
     const lo = idle.filter((m) => m.lightsOut);
     out.push({
       kind: 'warn',
       tag: idle.length + ' IDLE · ' + idle.map((m) => m.equipmentId).join(', '),
-      // The roster is already in the tag. Repeating it here as the lights-out subset
-      // read as two lists disagreeing, so say the count instead of naming them twice.
-      text: lo.length === idle.length
-        ? 'All of them can run lights-out.'
-        : lo.length
-          ? lo.length + ' of the ' + idle.length + ' can run lights-out.'
-          : 'None of them can run lights-out.',
+      text: kind === 'production'
+        ? 'No job booked at these stations right now.'
+        : lo.length === idle.length
+          ? 'All of them can run lights-out.'
+          : lo.length
+            ? lo.length + ' of the ' + idle.length + ' can run lights-out.'
+            : 'None of them can run lights-out.',
     });
   }
 
-  return out.length ? out : [{ kind: 'ok', tag: 'ALL RUNNING', text: 'Every machine has a job and nothing is down.' }];
+  return out.length ? out : [{
+    kind: 'ok',
+    tag: 'ALL RUNNING',
+    text: kind === 'machining' ? 'Every machine has a job and nothing is down.'
+      : kind === 'production' ? 'Every station has a job booked and nothing is held.'
+      : 'Every machine and station has a job and nothing is down.',
+  }];
+}
+
+// OEE and OLE are three factors multiplied: availability x performance x quality. Any factor
+// whose inputs are missing stays null and the score with it — a strip never multiplies by an
+// assumed 1.0, and it names the gap instead.
+const factorStrip = (row, avail, note, route, pending) => {
+  const f = factors(row, avail);
+  const gaps = [];
+  if (row) {
+    if (f.availability == null) gaps.push('no time booked');
+    if (f.performance == null) gaps.push(row.standardSeconds == null ? 'no routing standard' : 'no run time');
+    if (f.quality == null) gaps.push('no good/scrap posted');
+  }
+  const cell = (label, v, sub) => `
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+        <span class="mono" style="font-size:8px;letter-spacing:.06em;color:rgba(242,240,236,.55)">${label}</span>
+        <span class="mono" style="font-size:15px;font-weight:700;color:${fink(v)}">${fpct(v)}</span>
+        <span class="mono" style="font-size:8px;color:rgba(242,240,236,.42);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sub}</span>
+      </div>`;
+  return `
+  <div style="display:flex;flex-direction:column;gap:6px;padding:10px 11px;border-radius:9px;background:#131211;border:1px solid rgba(255,255,255,.09)">
+    <div style="display:flex;align-items:baseline;gap:8px">
+      <span class="mono" style="font-size:8.5px;font-weight:700;letter-spacing:.07em;color:rgba(242,240,236,.62)">${note}</span>
+      <span class="mono" style="margin-left:auto;font-size:14px;font-weight:700;color:${fink(f.score)}">${fpct(f.score)}</span>
+    </div>
+    ${row ? `<div style="display:flex;gap:7px">
+      ${cell('AVAILABILITY', f.availability, h1((row.runSeconds || 0) + (row.setupSeconds || 0)) + ' of ' + h1(avail))}
+      ${cell('PERFORMANCE', f.performance, h1(row.standardSeconds) + ' std')}
+      ${cell('QUALITY', f.quality, (row.goodQty || 0) + ' good \u00b7 ' + (row.scrapQty || 0) + ' scrap')}
+    </div>` : `<span class="mono" style="font-size:9px;line-height:1.5;color:rgba(242,240,236,.5)">${pending
+      ? 'Reading ' + route + '\u2026'
+      : 'Nothing booked today on ' + route + '.'}</span>`}
+    ${gaps.length ? `<span class="mono" style="font-size:8.5px;color:${AMBER}">Not scored: ${gaps.join(' \u00b7 ')}</span>` : ''}
+  </div>`;
+};
+
+// A station whose routing steps carry free-text or missing equipment cannot be charged time
+// honestly. Same treatment as an OSP step with no return date: say it is unmeasurable.
+const unattributed = (m) => `
+  <div style="display:flex;flex-direction:column;gap:5px;padding:10px 11px;border-radius:9px;background:#131211;border:1px dashed rgba(245,165,36,.4)">
+    <span class="mono" style="font-size:8.5px;font-weight:700;letter-spacing:.07em;color:${AMBER}">NO RELIABLE ATTRIBUTION</span>
+    <span class="mono" style="font-size:9px;line-height:1.5;color:rgba(242,240,236,.6)">Routing steps for this station carry free-text or blank equipment, so booked time cannot be charged here. Fix the routing assignment in Fulcrum to score it.</span>
+  </div>`;
+
+function peopleCard(o) {
+  const state = o.running ? 'running' : o.paused ? 'down' : 'idle';
+  const ink = INK[state];
+  const secs = o.runs.reduce((s, r) => s + (r.heldSeconds != null ? r.heldSeconds : (Date.now() - new Date(r.startedOnUtc)) / 1000), 0);
+  const availPct = F.shiftHours ? (secs / 3600 / F.shiftHours) * 100 : 0;
+  return `
+  <div class="card" style="border-left:3px solid ${ink};padding:13px 14px;display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;align-items:center;gap:9px">
+      <span class="dot ${state === 'running' ? 'live' : ''}" style="background:${ink}"></span>
+      <span style="font:700 18px/1.1 'Barlow Semi Condensed',Helvetica,sans-serif">${esc(o.name)}</span>
+      <span class="mono" style="margin-left:auto;font-size:9px;font-weight:600;letter-spacing:.05em;color:${ink}">${o.running ? o.running + ' RUNNING' : o.paused ? o.paused + ' PAUSED' : 'NO RUNS'}</span>
+    </div>
+    ${o.runs.length
+      ? o.runs.map((r) => {
+          const el2 = r.heldSeconds != null ? r.heldSeconds : (Date.now() - new Date(r.startedOnUtc)) / 1000;
+          return `
+          <div style="display:flex;flex-direction:column;gap:4px;padding:10px 11px;border-radius:9px;background:#131211">
+            <div style="display:flex;align-items:flex-start;gap:8px">
+              <span style="flex:1;min-width:0;font:700 15px/1.2 'Barlow Semi Condensed',Helvetica,sans-serif;overflow-wrap:anywhere">${esc(r.jobName || ('Job ' + r.jobId))}</span>
+              <span class="mono" style="flex:none;font-size:15px;color:${r.isPaused ? AMBER : GREEN}">${hhmm(el2)}</span>
+            </div>
+            <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.66)">${esc(r.operationName || 'step not named')} · ${esc(r.equipmentId || '—')} · ${r.isCnc ? 'machining' : 'production'}${r.isPaused ? ' · PAUSED' + (r.pauseReason ? ': ' + esc(r.pauseReason) : '') : ''}</span>
+          </div>`;
+        }).join('')
+      : `<div class="mono" style="padding:10px 11px;border-radius:9px;background:#131211;font-size:10.5px;color:rgba(242,240,236,.6)">No open runs. This list fills from live timers, so it is not a roster.</div>`}
+    ${factorStrip(laborRow(o), R.labor && R.labor.shiftSeconds, 'OLE \u00b7 LABOR EFFECTIVENESS', '/api/reports/labor', R.labor === undefined)}
+    <span class="mono" style="font-size:9px;color:rgba(242,240,236,.5)">Availability is booked time against the ${R.labor && R.labor.shiftSeconds ? Math.round(R.labor.shiftSeconds / 360) / 10 : F.shiftHours}-hour scheduled shift, whether or not they clocked in.</span>
+  </div>`;
 }
 
 function render() {
@@ -240,15 +397,21 @@ function render() {
     el.innerHTML = `<div class="wrap mono" style="color:rgba(242,240,236,.68)">Loading floor…</div>`;
     return;
   }
-  const cnc = F.machines;
-  const running = cnc.filter((m) => m.state === 'running');
-  const down = cnc.filter((m) => m.state === 'down');
+
+  const cnc = F.machines, sup = F.support;
+  const scope = VIEW === 'machining' ? cnc : VIEW === 'production' ? sup : cnc.concat(sup);
+  const running = scope.filter((m) => m.state === 'running');
+  const down = scope.filter((m) => m.state === 'down');
   const unattended = running.filter((m) => m.run && m.run.unattended);
-  const shopCut = cnc.reduce((a, m) => a + m.cuttingHours, 0);
-  const shopSetup = cnc.reduce((a, m) => a + m.setupHours, 0);
-  const shopAvail = cnc.reduce((a, m) => a + (m.shiftHours || 0), 0);
-  const shopSpindle = shopAvail ? (shopCut / shopAvail) * 100 : 0;
-  const shopUtil = shopAvail ? ((shopCut + shopSetup) / shopAvail) * 100 : 0;
+  const sum = (list, k) => list.reduce((acc, m) => acc + (m[k] || 0), 0);
+  const scopeAvail = sum(scope, 'shiftHours');
+  const scopeUtil = scopeAvail ? ((sum(scope, 'cuttingHours') + sum(scope, 'setupHours')) / scopeAvail) * 100 : 0;
+  const cncAvail = sum(cnc, 'shiftHours');
+  const shopSpindle = cncAvail ? (sum(cnc, 'cuttingHours') / cncAvail) * 100 : 0;
+  const staff = F.operators.filter((o) =>
+    VIEW === 'machining' ? o.runs.some((r) => r.isCnc)
+    : VIEW === 'production' ? o.runs.some((r) => !r.isCnc)
+    : true);
   const onShift = F.operators.filter((o) => o.runs.length).length;
 
   const kpi = (label, value, ink) =>
@@ -263,18 +426,105 @@ function render() {
       border:1px solid ${primary ? 'rgba(245,165,36,.4)' : 'rgba(255,255,255,.14)'};
       color:${primary ? AMBER : 'rgba(242,240,236,.82)'}">${label}</a>`;
 
+  const tab = (v) => `<button data-view="${v}" class="mono" style="min-height:44px;padding:0 16px;border-radius:9px;font-size:10.5px;font-weight:700;letter-spacing:.06em;
+    background:${VIEW === v ? 'rgba(46,212,122,.14)' : 'rgba(255,255,255,.05)'};
+    border:1px solid ${VIEW === v ? 'rgba(46,212,122,.45)' : 'rgba(255,255,255,.14)'};
+    color:${VIEW === v ? GREEN : 'rgba(242,240,236,.8)'}">${VIEWS[v].toUpperCase()}</button>`;
+
+  const headKpis = VIEW === 'people'
+    ? `${kpi('ON JOBS NOW', String(onShift) + ' / ' + F.operators.length, onShift ? GREEN : RED)}
+       ${kpi('RUNS OPEN', String(F.operators.reduce((s, o) => s + o.runs.length, 0)), null)}
+       ${kpi('PAUSED RUNS', String(F.operators.reduce((s, o) => s + o.paused, 0)), F.operators.some((o) => o.paused) ? AMBER : null)}
+       ${(() => { const v = rollup(R.labor && R.labor.operators, R.labor && R.labor.shiftSeconds); return kpi('OLE \u00b7 TODAY', fpct(v), fink(v)); })()}
+       ${kpi('READ AT', asOfLabel(F.asOfUtc), null)}`
+    : VIEW === 'production'
+      ? `${kpi('STATION UTIL · BOOKED', show(scopeUtil) + '%', inkFor(scopeUtil))}
+         ${kpi('WORKING NOW', running.length + ' / ' + scope.length, running.length ? GREEN : RED)}
+         ${kpi('HELD', String(down.length), down.length ? AMBER : null)}
+         ${(() => { const rows = (R.equipment && R.equipment.machines || []).filter((x) => !x.isCnc); const v = rollup(rows, R.equipment && R.equipment.calendarSeconds); return kpi('OEE \u00b7 TODAY', fpct(v), fink(v)); })()}
+         ${kpi('OPERATORS HERE', String(staff.length), null)}
+         ${kpi('READ AT', asOfLabel(F.asOfUtc), null)}`
+      : `${kpi(VIEW === 'machining' ? 'CNC UTIL · CUT+SETUP' : 'SHOP UTIL · BOOKED', show(scopeUtil) + '%', inkFor(scopeUtil))}
+         ${kpi('SPINDLE UTIL · CUT ONLY', show(shopSpindle) + '%', inkFor(shopSpindle))}
+         ${VIEW === 'machining'
+           ? (() => { const rows = (R.equipment && R.equipment.machines || []).filter((x) => x.isCnc); const v = rollup(rows, R.equipment && R.equipment.calendarSeconds); return kpi('OEE \u00b7 TODAY', fpct(v), fink(v)); })()
+           : ''}
+         ${kpi(VIEW === 'machining' ? 'CUTTING NOW' : 'RUNNING NOW', running.length + ' / ' + scope.length, running.length ? GREEN : RED)}
+         ${kpi('UNATTENDED', String(unattended.length), unattended.length ? BLUE : null)}
+         ${kpi('DOWN', String(down.length), down.length ? RED : null)}
+         ${kpi('OPERATORS ON JOBS', String(onShift), null)}
+         ${kpi('READ AT', asOfLabel(F.asOfUtc), null)}`;
+
+  const legend = `<div class="mono" style="margin-left:auto;display:flex;gap:14px;font-size:9px;color:rgba(242,240,236,.66)">
+      <span style="color:${GREEN}">&#9632; CUTTING</span><span style="color:${AMBER}">&#9632; SETUP</span><span style="color:${RED}">&#9632; DOWN</span><span>&#9632; IDLE</span>
+    </div>`;
+
+  const oeeNote = (route) => `<p class="note" style="margin:0;max-width:74ch">
+      ${route.indexOf('labor') > -1 ? 'OLE' : 'OEE'} multiplies availability by performance by quality, from
+      <strong style="color:rgba(242,240,236,.85);font-weight:500">GET ${route}</strong>, which aggregates today's completed
+      timers. Availability divides booked time by ${route.indexOf('labor') > -1 ? 'the scheduled shift' : 'the calendar day'},
+      performance compares the routing standard against run time, and quality is good against scrap. Any factor without inputs
+      stays unscored rather than counting as 100%. Buckets are cut on the UTC calendar day, so late-afternoon Pacific work
+      lands on the next day's report.
+    </p>`;
+
+  const mainCol = VIEW === 'people'
+    ? `<div style="display:flex;flex-direction:column;gap:11px">
+        <h2>Who is on a job · ${onShift} of ${F.operators.length}</h2>
+        <div class="grid">${F.operators.length ? F.operators.map(peopleCard).join('') : `<div class="mono" style="padding:13px 12px;border-radius:9px;border:1px dashed rgba(255,255,255,.14);font-size:10.5px;color:rgba(242,240,236,.66)">Nobody is clocked onto a job right now.</div>`}</div>
+        ${oeeNote('/api/reports/labor')}
+      </div>`
+    : VIEW === 'machining'
+      ? `<div style="display:flex;flex-direction:column;gap:11px">
+          <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px"><h2>CNC machining · ${cnc.length} machines</h2>${legend}</div>
+          <div class="grid">${cnc.map((m) => machineCard(m, true)).join('')}</div>
+          ${oeeNote('/api/reports/equipment')}
+        </div>`
+      : VIEW === 'production'
+        ? `<div style="display:flex;flex-direction:column;gap:11px">
+            <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px"><h2>Production stations · ${sup.length}</h2>${legend}</div>
+            <div class="grid">${sup.length ? sup.map((m) => machineCard(m, true)).join('') : `<div class="mono" style="padding:13px 12px;border-radius:9px;border:1px dashed rgba(255,255,255,.14);font-size:10.5px;color:rgba(242,240,236,.66)">No non-machining work centers came back on this read.</div>`}</div>
+            <p class="note" style="margin:0;max-width:74ch">Deburr, cleaning, passivation, packaging and shipping book step time, not spindle time, so there is no spindle number here. Booked time still divides by ${F.shiftHours} scheduled hours per station.</p>
+            ${oeeNote('/api/reports/equipment')}
+          </div>`
+        : `<div style="display:flex;flex-direction:column;gap:22px">
+            <div style="display:flex;flex-direction:column;gap:11px">
+              <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px"><h2>CNC machining · ${cnc.length} machines</h2>${legend}</div>
+              <div class="grid">${cnc.map((m) => machineCard(m)).join('')}</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:11px">
+              <h2>Production stations · step-level time only</h2>
+              <div class="support">
+                ${sup.map((c) => {
+                  const ink = INK[c.state];
+                  return `
+                  <div class="card" style="padding:11px 12px;display:flex;flex-direction:column;gap:6px">
+                    <div style="display:flex;align-items:center;gap:7px">
+                      <span class="dot" style="background:${ink}"></span>
+                      <span class="mono" style="font-size:11px;font-weight:700">${esc(c.equipmentId)}</span>
+                      <span class="mono" style="margin-left:auto;font-size:8.5px;font-weight:600;letter-spacing:.05em;color:${ink}">${LABEL[c.state]}</span>
+                    </div>
+                    <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.68);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.workCenterName || c.model || c.description || 'not named')}</span>
+                    <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.run ? esc(c.run.jobName || ('Job ' + c.run.jobId)) + ' · ' + esc(c.run.operatorName) : '&mdash;'}</span>
+                  </div>`;
+                }).join('')}
+              </div>
+            </div>
+            <p class="note" style="margin:0;max-width:70ch">
+              Both numbers divide by ${F.shiftHours} scheduled hours per machine per weekday.
+              <strong style="color:rgba(242,240,236,.85);font-weight:500">Utilization</strong> counts cutting plus setup — setup is productive work.
+              <strong style="color:rgba(242,240,236,.85);font-weight:500">Spindle</strong> counts cutting alone, which is the narrower question of what the
+              capital equipment is earning. Downtime is excluded from both. Neither is capped:
+              lights-out overnight and weekend running can exceed 100% of a scheduled weekday.
+            </p>
+          </div>`;
+
   el.innerHTML = `
   <div class="bar">
-    <h1>Floor board</h1>
+    <h1>${VIEWS[VIEW]}</h1>
     <span class="mono" style="padding:4px 9px;border-radius:5px;background:rgba(46,212,122,.14);color:${GREEN};font-size:10px;font-weight:700;letter-spacing:.07em">LIVE</span>
     <div style="margin-left:auto;display:flex;flex-wrap:wrap;align-items:center;gap:14px 26px">
-      ${kpi('CNC UTIL · CUT+SETUP', show(shopUtil) + '%', inkFor(shopUtil))}
-      ${kpi('SPINDLE UTIL · CUT ONLY', show(shopSpindle) + '%', inkFor(shopSpindle))}
-      ${kpi('CUTTING NOW', running.length + ' / ' + cnc.length, running.length ? GREEN : RED)}
-      ${kpi('UNATTENDED', String(unattended.length), unattended.length ? BLUE : null)}
-      ${kpi('DOWN', String(down.length), down.length ? RED : null)}
-      ${kpi('OPERATORS ON JOBS', String(onShift), null)}
-      ${kpi('READ AT', asOfLabel(F.asOfUtc), null)}
+      ${headKpis}
       <a class="mono" href="./index.html?stay=1&action=signout" style="display:flex;align-items:center;min-height:44px;padding:0 14px;border-radius:9px;text-decoration:none;
         font-size:9.5px;font-weight:600;letter-spacing:.06em;background:rgba(255,255,255,.06);
         border:1px solid rgba(255,255,255,.16);color:rgba(242,240,236,.72)">SIGN OUT</a>
@@ -282,83 +532,48 @@ function render() {
   </div>
 
   <div style="display:flex;flex-wrap:wrap;gap:8px;padding:11px clamp(14px,2.5vw,26px);background:#1b1a18;border-bottom:1px solid rgba(255,255,255,.08)">
+    ${tab('floor')}${tab('machining')}${tab('production')}${tab('people')}
+    <span style="flex:1"></span>
     ${opLink('reports.html', 'Reports · OLE + OEE', true)}
-    ${opLink('pm.html', 'Project management')}
+    ${opLink('pm.html', 'Project Management')}
     ${opLink('plan.html', 'What\u2019s on deck')}
-    ${opLink('plan.html#late', 'Late jobs')}
-    ${opLink('index.html?stay=1&action=scan', 'Scan a traveler')}
-    ${opLink('index.html?stay=1&action=search', 'Search jobs')}
-    ${opLink('index.html?stay=1&action=runs', 'My runs')}
-    ${opLink('index.html?stay=1&action=held', 'Held writes')}
+    ${opLink('plan.html#late', 'Late Jobs')}
+    ${opLink('index.html?stay=1&action=scan', 'Scan a Traveler')}
+    ${opLink('index.html?stay=1&action=search', 'Search Jobs')}
   </div>
 
   <div class="wrap cols">
-    <div style="display:flex;flex-direction:column;gap:22px;min-width:0">
-      <div style="display:flex;flex-direction:column;gap:11px">
-        <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">
-          <h2>CNC machining · ${cnc.length} machines</h2>
-          <div class="mono" style="margin-left:auto;display:flex;gap:14px;font-size:9px;color:rgba(242,240,236,.66)">
-            <span style="color:${GREEN}">&#9632; CUTTING</span><span style="color:${AMBER}">&#9632; SETUP</span><span style="color:${RED}">&#9632; DOWN</span><span>&#9632; IDLE</span>
-          </div>
-        </div>
-        <div class="grid">${cnc.map(machineCard).join('')}</div>
-      </div>
-
-      <div style="display:flex;flex-direction:column;gap:11px">
-        <h2>Support work centers · step-level time only</h2>
-        <div class="support">
-          ${F.support.map((c) => {
-            const ink = INK[c.state];
-            return `
-            <div class="card" style="padding:11px 12px;display:flex;flex-direction:column;gap:6px">
-              <div style="display:flex;align-items:center;gap:7px">
-                <span class="dot" style="background:${ink}"></span>
-                <span class="mono" style="font-size:11px;font-weight:700">${esc(c.equipmentId)}</span>
-                <span class="mono" style="margin-left:auto;font-size:8.5px;font-weight:600;letter-spacing:.05em;color:${ink}">${LABEL[c.state]}</span>
-              </div>
-              <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.68);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.workCenterName)}</span>
-              <span class="mono" style="font-size:9.5px;color:rgba(242,240,236,.6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.run ? esc(c.run.jobName || ('Job ' + c.run.jobId)) + ' · ' + esc(c.run.operatorName) : '&mdash;'}</span>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>
-
-      <p class="note" style="margin:0;max-width:70ch">
-        Both numbers divide by ${F.shiftHours} scheduled hours per machine per weekday.
-        <strong style="color:rgba(242,240,236,.85);font-weight:500">Utilization</strong> counts cutting plus setup — setup is productive work.
-        <strong style="color:rgba(242,240,236,.85);font-weight:500">Spindle</strong> counts cutting alone, which is the narrower question of what the
-        capital equipment is earning. Downtime is excluded from both. Neither is capped:
-        lights-out overnight and weekend running can exceed 100% of a scheduled weekday.
-      </p>
-    </div>
+    <div style="display:flex;flex-direction:column;gap:22px;min-width:0">${mainCol}</div>
 
     <div style="display:flex;flex-direction:column;gap:22px;min-width:0">
+      ${VIEW === 'people' ? '' : `
       <div style="display:flex;flex-direction:column;gap:11px">
-        <h2>Needs attention</h2>
-        ${alerts().map((a) => {
-          const ink = a.kind === 'bad' ? RED : a.kind === 'warn' ? AMBER : GREEN;
-          const bg = a.kind === 'bad' ? 'rgba(226,73,59,.11)' : a.kind === 'warn' ? 'rgba(245,165,36,.1)' : 'rgba(46,212,122,.1)';
+        <h2>Needs Attention</h2>
+        ${alerts(scope, VIEW).map((al) => {
+          const ink = al.kind === 'bad' ? RED : al.kind === 'warn' ? AMBER : GREEN;
+          const bg = al.kind === 'bad' ? 'rgba(226,73,59,.11)' : al.kind === 'warn' ? 'rgba(245,165,36,.1)' : 'rgba(46,212,122,.1)';
           return `
           <div style="padding:11px 12px;border-radius:9px;background:${bg};border:1px solid ${ink}55;display:flex;flex-direction:column;gap:5px">
-            <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.06em;color:${ink}">${esc(a.tag)}</span>
-            <span class="mono" style="font-size:10.5px;line-height:1.45;color:rgba(242,240,236,.72)">${esc(a.text)}</span>
+            <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.06em;color:${ink}">${esc(al.tag)}</span>
+            <span class="mono" style="font-size:10.5px;line-height:1.45;color:rgba(242,240,236,.72)">${esc(al.text)}</span>
           </div>`;
         }).join('')}
       </div>
 
       <div style="display:flex;flex-direction:column;gap:11px">
-        <h2>Staffing</h2>
-        ${F.operators.length
-          ? F.operators.map(staffRow).join('')
+        <h2>Staffing${VIEW === 'floor' ? '' : ' · this area'}</h2>
+        ${staff.length
+          ? staff.map(staffRow).join('')
           : `<div class="mono" style="padding:13px 12px;border-radius:9px;border:1px dashed rgba(255,255,255,.14);font-size:10.5px;line-height:1.5;color:rgba(242,240,236,.66)">
-              Nobody is clocked onto a job right now. This list fills from open runs, so it stays empty between shifts \u2014 it is not a roster.
+              Nobody is clocked onto a job here right now. This list fills from open runs, so it stays empty between shifts — it is not a roster.
             </div>`}
-      </div>
+        <a class="mono" href="#people" style="font-size:10px;letter-spacing:.05em;text-decoration:none">Everyone, with OLE &rarr;</a>
+      </div>`}
 
       <div id="decide" style="padding:12px 13px;border-radius:9px;border:1px solid rgba(255,255,255,.1);display:flex;flex-direction:column;gap:6px">
         <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.07em;color:${AMBER}">HOW THESE ARE COUNTED</span>
-        <span class="note">Denominator is 7 scheduled hours per machine, Monday to Friday. Utilization counts
-        cutting and setup; spindle utilization counts cutting only. Unattended running counts the same as
+        <span class="note">Denominator is ${F.shiftHours} scheduled hours per machine or station, Monday to Friday. Utilization counts
+        booked cutting and setup; spindle utilization counts cutting only and applies to CNC alone. Unattended running counts the same as
         attended. Values above 100% mean work outside the scheduled weekday, not an error.</span>
       </div>
 
@@ -367,9 +582,17 @@ function render() {
   </div>`;
 }
 
+el.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-view]');
+  if (b) setView(b.getAttribute('data-view'));
+});
+
 async function load() {
   if (!mayView(sessionUser())) { render(); return; }
   try { F = await api.floorStatus(); } catch (e) { F = F || null; }
+  const iso = todayIso();
+  const [lab, eq] = await Promise.all([api.laborReport(iso), api.equipmentReport(iso)]);
+  R = { labor: lab || null, equipment: eq || null };
   render();
 }
 

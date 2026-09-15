@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#131211">
-<title>On deck — Fulcrum Shop Floor</title>
+<title>On Deck — Fulcrum Shop Floor</title>
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -235,7 +235,7 @@ function queueView() {
         </div>
 
         <div style="display:flex;flex-direction:column;gap:8px">
-          <h2>Running now</h2>
+          <h2>Running Now</h2>
           ${now.length
             ? now.map((r) => `
               <div class="card" style="padding:11px 12px;display:flex;flex-direction:column;gap:6px;border-left:3px solid ${GREEN}">
@@ -249,7 +249,7 @@ function queueView() {
         </div>
 
         <div style="display:flex;flex-direction:column;gap:8px">
-          <h2>Next up</h2>
+          <h2>Next Up</h2>
           ${list.length
             ? `<div class="rows">${list.slice(0, 1).map((op, i) => opRow(op, i)).join('')}</div>`
             : `<div class="card" style="padding:11px 12px"><span class="note">${SCHED.state === 'ready' ? 'Nothing scheduled here.' : 'Load the schedule to see what is queued here.'}</span></div>`}
@@ -289,7 +289,7 @@ function lateView() {
   return `
   <div style="display:flex;flex-direction:column;gap:16px">
     <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:10px">
-      <h1>Late jobs</h1>
+      <h1>Late Jobs</h1>
       <span class="mono" style="font-size:11px;color:${late.length ? RED : GREEN}">
         ${late.length} of ${JOBS.length} open jobs past their scheduled finish
       </span>
@@ -339,7 +339,7 @@ function render() {
   const u = sessionUser();
   el.innerHTML = `
   <div class="bar">
-    <h1 style="font-size:20px">On deck</h1>
+    <h1 style="font-size:20px">On Deck</h1>
     <div style="display:flex;flex-wrap:wrap;gap:8px">
       ${tab('machines', 'BY MACHINE')}
       ${tab('areas', 'BY OPERATION')}
@@ -353,11 +353,14 @@ function render() {
     </div>
   </div>
   <div class="navrow">
-    ${link('./index.html?stay=1&action=scan', 'Scan a traveler')}
-    ${link('./index.html?stay=1&action=search', 'Search jobs')}
-    ${link('./index.html?stay=1&action=runs', 'My runs')}
-    ${link('./board.html', 'Floor board')}
-    ${link('./pm.html', 'Project management')}
+    ${link('./index.html?stay=1&action=scan', 'Scan a Traveler')}
+    ${link('./index.html?stay=1&action=search', 'Search Jobs')}
+    ${link('./index.html?stay=1&action=runs', 'My Runs')}
+    ${link('./board.html', 'Floor Board')}
+    ${link('./board.html#machining', 'Machining')}
+    ${link('./board.html#production', 'Production')}
+    ${link('./board.html#people', 'People')}
+    ${link('./pm.html', 'Project Management')}
   </div>
   <div class="wrap" style="display:flex;flex-direction:column;gap:18px">
     ${TAB === 'late' ? lateView() : queueView()}

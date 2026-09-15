@@ -1,5 +1,28 @@
 # Reports API — what the OLE and OEE views need
 
+> **Status, 2026-09-15.** `/api/reports/labor` and `/api/reports/equipment` are implemented and
+> the Reports page, the Machining, Production and People board views all read them live.
+> Two open items:
+>
+> 1. **UTC vs Pacific bucketing.** It matters. The shop runs roughly 05:00–15:00 Pacific, which
+>    is 12:00–22:00 UTC in summer, so a single UTC day currently holds one Pacific day's work and
+>    nothing crosses midnight — today's numbers are right. It breaks on overtime and lights-out:
+>    anything booked after 17:00 Pacific (00:00 UTC) lands on the next day's report, which will
+>    show a machine that ran all night as idle on the night it ran and over-utilized the morning
+>    after. Bucket on `America/Los_Angeles` local day instead, and keep `date` meaning the local
+>    day. Until then the views state the caveat.
+> 2. **Attribution for non-CNC stations.** Routing steps carry free text or blanks for several
+>    stations (audit below). The client now treats any station code outside the known list as
+>    unmeasurable rather than scoring it.
+>
+> Known equipment codes, from the 2026-09-15 audit: DB1 deburr, S1 shipping, PK packaging,
+> U1 cleaning, PAS passivation, QC1/QL quality, CMM1/CMM2 CMM inspection, P1 programming
+> (CNC and CMM share it), SC1 bandsaw, L1 laser. Seen wrong in live routings: Deburr, Shipping,
+> CNC Programming and Laser Engraving alternate between the real code and free text
+> ("Post- Machining Work Bench", "Programming Office"); Cleaning scheduled against Assembly
+> Station 1 instead of U1; CMM Inspection as "9.Keyence XM"; Bandsaw often blank; PK never used.
+> Brian's team holds the fix checklist.
+
 Two read-only routes. Neither exists yet. `GET /api/dashboard/machines` cannot be reused:
 it measures only timers that are running at this instant (`Date.now() - startedUtc`), so
 it has no answer for "what happened during today's shift". These routes need **completed**
@@ -151,6 +174,44 @@ Rules:
   `POST /{resource}/list` + `Skip`/`Take` pattern as `/jobs/list`, `/equipment/list` and
   `/job-tracking-timers/list` — verify the path and the received-quantity field names against
   the live schema before relying on them, the way the routing endpoints were verified.
+
+### Implementation path — the Fulcrum endpoints that back both routes
+
+Checked against Fulcrum's public API docs and changelog 2026-09-15. The data exists; this
+server simply does not call it yet. Paths follow the same `POST /{resource}/list` family that
+`/jobs/list`, `/equipment/list` and `/job-tracking-timers/list` already use, so treat the exact
+paths as TODO/VERIFY and probe them the way the routing endpoints were probed.
+
+What the docs confirm is available:
+
+- **Purchase orders**, with part line items carrying `promiseDate` and `receiveByDate` — these
+  are the `promisedDate` / `expectedDate` this spec asks for. POs also carry
+  `vendorOrderNumber`, so the vendor name is reachable without a second guess.
+- **Receipts** — Receipt List and Receipt Get, filterable, carrying invoice and external
+  reference. Receipt date against the line's `promiseDate` is inbound on-time.
+- **Shipments** — Shipment Get returns the scheduled ship-by date and, once shipped, the actual
+  shipped date. That pair is outbound on-time, and it removes the completed-job problem noted
+  below: on-time outbound can be measured from shipments directly rather than from a job query
+  that only returns open work.
+- **Reporting-view list endpoints** — Fulcrum exposes pre-joined report rows (a shipping
+  reporting view with shipped/unshipped columns among them). If the shipping view covers the
+  ship-by vs shipped-date pair, use it instead of hand-joining shipments to sales-order lines.
+
+Order of work:
+
+1. Add to `fulcrumClient.js`: `listPurchaseOrders`, `getPurchaseOrder`, `listReceipts`,
+   `listShipments`. Same `request('POST', '/x/list?Take=…', {})` shape as the rest.
+2. Add a debug probe route in `server.js` (the pattern already used for the operations list) and
+   hit each one against the live ITAR token before wiring any view to it. Record the real field
+   names — this spec's names are the client contract, not Fulcrum's.
+3. Build `/api/materials/backlog` from purchase orders + receipts, mapping Fulcrum's fields onto
+   the shape above and joining to jobs via the routing's `associatedPurchaseOrderIds`. Ship it —
+   it unblocks two KPI cards, section 1 and the correct date for section 2.
+4. Build `/api/reports/on-time` from receipts (inbound) and shipments (outbound), over a stated
+   window, returning `null` for any factor with no data behind it.
+
+Steps 1 and 2 are an hour of work and answer the open question (do the fields exist, and what are
+they called). Everything after that is shaping data this server already has access to.
 
 `/api/reports/on-time`: completed history, not open work — inbound (received date vs promised
 date per PO line) and outbound (ship or completion date vs scheduled end per job), each as

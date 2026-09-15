@@ -79,7 +79,7 @@ function factors(r, availableSeconds) {
 const gate = (u) => `
   <div class="wrap" style="display:flex;flex-direction:column;gap:14px;max-width:560px;padding-top:12vh">
     <span class="mono" style="font-size:9.5px;font-weight:700;letter-spacing:.09em;color:${AMBER}">IMPULSE PRECISION · REPORTS</span>
-    <h1>${u ? 'Not your view' : 'Sign in first'}</h1>
+    <h1>${u ? 'Not your view' : 'Sign In First'}</h1>
     <p class="mono" style="margin:0;font-size:12px;line-height:1.65;color:rgba(242,240,236,.7)">
       ${u
         ? esc(u.name) + ' is signed in as ' + esc(String(u.role)) + '. Productivity and utilization reports are for supervisors, quality managers and administrators.'
@@ -245,13 +245,16 @@ function render() {
     </div>
   </div>
   <div class="navrow">
-    ${link('./board.html', 'Floor board')}
-    ${link('./pm.html', 'Project management')}
+    ${link('./board.html', 'Floor Board')}
+    ${link('./board.html#machining', 'Machining')}
+    ${link('./board.html#production', 'Production')}
+    ${link('./board.html#people', 'People')}
+    ${link('./pm.html', 'Project Management')}
     ${link('./plan.html', 'What\u2019s on deck')}
-    ${link('./plan.html#late', 'Late jobs')}
-    ${link('./index.html?stay=1&action=scan', 'Scan a traveler')}
-    ${link('./index.html?stay=1&action=search', 'Search jobs')}
-    ${link('./index.html?stay=1&action=runs', 'My runs')}
+    ${link('./plan.html#late', 'Late Jobs')}
+    ${link('./index.html?stay=1&action=scan', 'Scan a Traveler')}
+    ${link('./index.html?stay=1&action=search', 'Search Jobs')}
+    ${link('./index.html?stay=1&action=runs', 'My Runs')}
   </div>
   <div class="wrap" style="display:flex;flex-direction:column;gap:20px">
     ${TAB === 'people' ? peopleView() : equipmentView()}
